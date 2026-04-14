@@ -42,7 +42,7 @@ BQ_DATE_END    = os.environ.get("BQ_DATE_END",   "20210131")
 BQ_CHUNK_DAYS  = int(os.environ.get("BQ_CHUNK_DAYS")  or 7)
 EXPORT_WORKERS = int(os.environ.get("INGEST_WORKERS") or 4)
 PAGE_SIZE      = int(os.environ.get("BQ_BATCH_SIZE")  or 2000)
-DATA_DIR       = os.environ.get("DATA_DIR", "/data")
+DATA_DIR       = os.environ.get("DATA_DIR", "/ecom-data")
 SA_KEY_PATH    = os.environ.get(
     "GOOGLE_APPLICATION_CREDENTIALS", "/secrets/sa-key.json"
 )
