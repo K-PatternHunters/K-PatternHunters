@@ -11,6 +11,7 @@ openai
 
 # Database
 pymongo
+motor
 qdrant-client
 
 # PPT generation
@@ -22,6 +23,7 @@ redis
 
 # Config / utilities
 python-dotenv
+pydantic-settings
 
 # Code quality (dev)
 ruff
