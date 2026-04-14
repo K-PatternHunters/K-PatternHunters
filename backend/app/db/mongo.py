@@ -1,19 +1,34 @@
 """MongoDB connection and collection accessors for raw_logs, analysis_results, and job_status."""
 
 # Collections:
-#   raw_logs          — ingested GA4 event records
-#   analysis_results  — final per-job analysis outputs and PPT download URL
+#   events            — ingested GA4 event records (MONGO_COLLECTION from settings)
+#   analysis_results  — final per-job InsightReport outputs
 #   job_status        — job lifecycle state: pending | running | done | failed
 
-# TODO: initialise AsyncIOMotorClient with MONGODB_URI from config
-# TODO: expose get_collection(name) helper used by agents and routers
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
 
-# from motor.motor_asyncio import AsyncIOMotorClient  # async MongoDB driver
+from app.core.config import get_settings
 
-client = None       # Placeholder — replace with AsyncIOMotorClient instance
-db = None           # Placeholder — replace with database handle
+_client: AsyncIOMotorClient | None = None
 
 
-def get_collection(name: str):
-    # Placeholder — implementation pending
-    raise NotImplementedError
+async def connect() -> None:
+    """Initialise the Motor client. Call once at application startup."""
+    global _client
+    settings = get_settings()
+    _client = AsyncIOMotorClient(settings.mongodb_uri)
+
+
+async def disconnect() -> None:
+    """Close the Motor client. Call once at application shutdown."""
+    global _client
+    if _client is not None:
+        _client.close()
+        _client = None
+
+
+def get_collection(name: str) -> AsyncIOMotorCollection:
+    """Return a handle to the named collection in the configured database."""
+    if _client is None:
+        raise RuntimeError("MongoDB client is not initialised — call connect() first")
+    return _client[get_settings().MONGO_DB][name]

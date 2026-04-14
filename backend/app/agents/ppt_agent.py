@@ -7,9 +7,21 @@
 # TODO: save .pptx to disk/object storage and store download URL in analysis_results MongoDB collection
 # TODO: return ppt_url to pipeline state
 
+import logging
+
 from pptx import Presentation  # python-pptx
+
+logger = logging.getLogger(__name__)
 
 
 async def ppt_agent(state: dict) -> dict:
-    # Placeholder — implementation pending
-    raise NotImplementedError
+    """Temporary no-op PPT node.
+
+    Keep the pipeline successful until actual PPT rendering/storage is implemented.
+    insight_report is already persisted by the router, so returning a placeholder
+    ppt_url lets downstream status/result APIs work without failing the job.
+    """
+    _ = Presentation  # keep import intentional until real PPT generation lands
+    job_id = state.get("job_id", "<unknown>")
+    logger.info("ppt_agent: placeholder mode for job_id=%s; skipping PPT generation", job_id)
+    return {"ppt_url": ""}

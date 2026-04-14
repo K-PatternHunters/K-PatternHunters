@@ -74,20 +74,21 @@ def ensure_indexes(events_col, items_col) -> None:
 
 # ── 파일 탐색 ─────────────────────────────────────────────────────────────────
 def find_data_files() -> list[str]:
-    """DATA_DIR에서 .ndjson.gz 파일 목록 반환 (날짜순 정렬)"""
+    """DATA_DIR 이하에서 .ndjson.gz 파일 목록 반환 (경로순 정렬)."""
     if not os.path.isdir(DATA_DIR):
         raise FileNotFoundError(
             f"데이터 디렉터리 없음: {DATA_DIR}\n"
             f"먼저 export_bq.py를 실행하세요."
         )
-    files = sorted(
-        os.path.join(DATA_DIR, f)
-        for f in os.listdir(DATA_DIR)
-        if f.endswith(".ndjson.gz")
-    )
+    files: list[str] = []
+    for root, _, filenames in os.walk(DATA_DIR):
+        for filename in filenames:
+            if filename.endswith(".ndjson.gz"):
+                files.append(os.path.join(root, filename))
+    files.sort()
     if not files:
         raise FileNotFoundError(
-            f"{DATA_DIR} 에 .ndjson.gz 파일이 없습니다.\n"
+            f"{DATA_DIR} 이하에 .ndjson.gz 파일이 없습니다.\n"
             f"먼저 export_bq.py를 실행하세요."
         )
     return files
