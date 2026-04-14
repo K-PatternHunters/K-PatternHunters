@@ -1,13 +1,16 @@
 # docker-compose.yaml
-# Run:  docker compose up -d --build
-# Ingest: docker compose run --rm ingest python export_bq.py
-#         docker compose run --rm ingest python ingest_local.py
+#
+# 일반 실행:
+#   docker compose up --build
+#
+# 1회성 작업:
+#   docker compose run --rm ingest python export_bq.py      # BQ → 로컬 파일
+#   docker compose run --rm ingest python ingest_local.py   # 로컬 파일 → MongoDB
+#   docker compose run --rm backend python -m rag.ingest_docs          # 문서 → Qdrant
+#   docker compose run --rm backend python -m rag.ingest_docs --reset  # 초기화 후 재적재
 
 services:
-
-  # ──────────────────────────────────────────
-  # Frontend (Vue.js)
-  # ──────────────────────────────────────────
+  # ── Frontend (Vue.js) ──────────────────────────────────────────────────────
   frontend:
     build:
       context: ./frontend
@@ -24,9 +27,7 @@ services:
     networks:
       - app-network
 
-  # ──────────────────────────────────────────
-  # Backend (FastAPI)
-  # ──────────────────────────────────────────
+  # ── Backend (FastAPI + RAG) ────────────────────────────────────────────────
   backend:
     build:
       context: ./backend
@@ -44,12 +45,11 @@ services:
         condition: service_started
     volumes:
       - ./backend:/app
+      - hf_cache:/root/.cache/huggingface
     networks:
       - app-network
 
-  # ──────────────────────────────────────────
-  # MongoDB (GA4 로그 저장소)
-  # ──────────────────────────────────────────
+  # ── MongoDB (GA4 로그 저장소) ──────────────────────────────────────────────
   mongodb:
     image: mongo:7.0
     container_name: mongodb
@@ -70,7 +70,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # MongoDB 웹 UI (개발용)
+  # ── MongoDB 웹 UI (개발용) ─────────────────────────────────────────────────
   mongo-express:
     image: mongo-express:1.0.2
     container_name: mongo-express
@@ -88,9 +88,7 @@ services:
     networks:
       - app-network
 
-  # ──────────────────────────────────────────
-  # Qdrant (벡터 DB)
-  # ──────────────────────────────────────────
+  # ── Qdrant (벡터 DB) ───────────────────────────────────────────────────────
   qdrant:
     image: qdrant/qdrant:latest
     ports:
@@ -101,9 +99,7 @@ services:
     networks:
       - app-network
 
-  # ──────────────────────────────────────────
-  # Redis (작업 상태 폴링)
-  # ──────────────────────────────────────────
+  # ── Redis (작업 상태 폴링) ─────────────────────────────────────────────────
   redis:
     image: redis:7.2-alpine
     ports:
@@ -113,14 +109,10 @@ services:
     networks:
       - app-network
 
-  # ──────────────────────────────────────────
-  # BigQuery → MongoDB 적재 (1회성 Job)
-  # docker compose run --rm ingest python export_bq.py
-  # docker compose run --rm ingest python ingest_local.py
-  # ──────────────────────────────────────────
+  # ── BigQuery → MongoDB 적재 (1회성 Job) ────────────────────────────────────
   ingest:
     build:
-      context: ./ingest
+      context: ./data/ingest
       dockerfile: Dockerfile
     container_name: bq-ingest
     depends_on:
@@ -137,11 +129,11 @@ services:
       BQ_BATCH_SIZE: ${BQ_BATCH_SIZE}
       BQ_CHUNK_DAYS: ${BQ_CHUNK_DAYS}
       INGEST_WORKERS: ${INGEST_WORKERS}
-      DATA_DIR: /data
+      DATA_DIR: /data/ecom-data
       GOOGLE_APPLICATION_CREDENTIALS: /secrets/sa-key.json
     volumes:
       - ${SA_KEY_PATH}:/secrets/sa-key.json:ro
-      - ./data:/data
+      - ./data/ecom-data:/data/ecom-data
     networks:
       - app-network
     profiles:
@@ -151,6 +143,7 @@ volumes:
   mongo_data:
   qdrant_data:
   redis_data:
+  hf_cache:
 
 networks:
   app-network:

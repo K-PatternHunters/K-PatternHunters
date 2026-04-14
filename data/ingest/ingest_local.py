@@ -35,7 +35,7 @@ MONGO_URI              = os.environ["MONGO_URI"]
 MONGO_DB               = os.environ.get("MONGO_DB", "ga4_ecommerce")
 MONGO_COLLECTION       = os.environ.get("MONGO_COLLECTION", "events")
 MONGO_ITEMS_COLLECTION = "event_items"
-DATA_DIR               = os.environ.get("DATA_DIR", "/data")
+DATA_DIR               = os.environ.get("DATA_DIR", "/ecom-data")
 BATCH_SIZE             = int(os.environ.get("BQ_BATCH_SIZE")  or 2000)
 WORKERS                = int(os.environ.get("INGEST_WORKERS") or 4)
 
