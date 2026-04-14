@@ -39,6 +39,7 @@ services:
     environment:
       # Override host to the Docker service name (env_file sets localhost by default)
       MONGO_HOST: mongodb
+      PPT_OUTPUT_DIR: /tmp/ppt_reports
     depends_on:
       mongodb:
         condition: service_healthy
@@ -49,6 +50,7 @@ services:
     volumes:
       - ./backend:/app
       - hf_cache:/root/.cache/huggingface
+      - ppt_reports:/tmp/ppt_reports
     networks:
       - app-network
 
@@ -159,6 +161,7 @@ volumes:
   qdrant_data:
   redis_data:
   hf_cache:
+  ppt_reports:
 
 networks:
   app-network:
