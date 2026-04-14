@@ -206,7 +206,7 @@ async def context_agent(state: dict) -> dict:
         model="gpt-4o-mini",
         temperature=0,
         api_key=settings.OPENAI_API_KEY,
-    ).with_structured_output(DomainContext)
+    ).with_structured_output(DomainContext, method="function_calling")
 
     domain_context: DomainContext = await llm.ainvoke(
         [

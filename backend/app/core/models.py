@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+def _keep(existing, new):
+    """LangGraph reducer: retain existing value when node does not update the field."""
+    return new if new is not None else existing
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -14,6 +19,8 @@ from pydantic import BaseModel, Field
 class AnalysisRequest(BaseModel):
     period: Literal["daily", "weekly", "monthly"] = "weekly"
     domain_description: str
+    week_start: str = ""   # YYYYMMDD — MongoDB query range start (inclusive)
+    week_end: str = ""     # YYYYMMDD — MongoDB query range end (inclusive)
     log_ids: list[str] = []
 
 
@@ -249,6 +256,125 @@ class DomainContext(BaseModel):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Insight report — produced by insight_agent, consumed by ppt_agent
+# ──────────────────────────────────────────────────────────────────────────────
+
+class SlideContent(BaseModel):
+    """Ready-to-render content for a single PPT slide.
+
+    ppt_agent can consume this directly without re-interpreting data.
+    """
+
+    slide_type: str = Field(
+        description=(
+            "Slide category. One of: title, executive_summary, performance, "
+            "funnel, cohort, journey, anomaly, prediction, recommendations"
+        )
+    )
+    title: str = Field(description="Slide title text")
+    headline: str = Field(
+        description="One-sentence key message for this slide (displayed as sub-title or callout)"
+    )
+    bullets: list[str] = Field(
+        description="Supporting bullet points (3-5 items)"
+    )
+    metrics: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Key numeric values to display on the slide. "
+            "Keys are metric names, values are numbers or formatted strings."
+        ),
+    )
+    chart_type: str = Field(
+        description=(
+            "Recommended chart/visual type for this slide. "
+            "e.g. funnel_chart, heatmap, sankey, line_chart, bar_chart, kpi_cards, table"
+        )
+    )
+    chart_data_key: str = Field(
+        description=(
+            "The PipelineState key that holds the raw data for the chart "
+            "(e.g. funnel_metrics, cohort_metrics). "
+            "ppt_agent uses this to pull chart data."
+        )
+    )
+    speaker_notes: str = Field(
+        default="",
+        description="Additional context or speaking points — not shown on the slide itself",
+    )
+
+
+class InsightReport(BaseModel):
+    """Structured output from insight_agent.
+
+    Contains all content needed by ppt_agent to generate slides without
+    additional LLM calls or data re-interpretation.
+    Serialised via .model_dump() and stored under ``insight_report`` in PipelineState.
+    """
+
+    # ── Report meta ───────────────────────────────────────────────────────────
+    domain: str = Field(description="Domain category (from domain_context)")
+    analysis_period: str = Field(description="e.g. '2024-W12 (Mar 18–24)'")
+    overall_sentiment: Literal["positive", "negative", "neutral", "mixed"] = Field(
+        description="Overall tone of the week's performance"
+    )
+
+    # ── Executive layer ────────────────────────────────────────────────────────
+    executive_summary: str = Field(
+        description="3-5 sentence narrative summarising the week's most important findings"
+    )
+    top_findings: list[str] = Field(
+        description="Top 3-5 key findings across all analyses, in priority order"
+    )
+    recommendations: list[str] = Field(
+        description="Top 3-5 specific, actionable recommendations based on the findings"
+    )
+
+    # ── Per-analysis slide contents ────────────────────────────────────────────
+    performance_slide: SlideContent | None = Field(
+        default=None,
+        description="Slide content for performance KPIs; None if analysis did not run",
+    )
+    funnel_slide: SlideContent | None = Field(
+        default=None,
+        description="Slide content for funnel analysis; None if analysis did not run",
+    )
+    cohort_slide: SlideContent | None = Field(
+        default=None,
+        description="Slide content for cohort/retention; None if analysis did not run",
+    )
+    journey_slide: SlideContent | None = Field(
+        default=None,
+        description="Slide content for user journey paths; None if analysis did not run",
+    )
+    anomaly_slide: SlideContent | None = Field(
+        default=None,
+        description="Slide content for anomaly findings; None if analysis did not run",
+    )
+    prediction_slide: SlideContent | None = Field(
+        default=None,
+        description="Slide content for next-week forecast; None if analysis did not run",
+    )
+
+    # ── Cross-analysis findings ────────────────────────────────────────────────
+    cross_analysis_findings: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Insights that emerge from combining multiple analyses "
+            "(e.g. funnel drop-off corroborated by anomaly detection)"
+        ),
+    )
+
+    # ── PPT assembly hints ─────────────────────────────────────────────────────
+    slide_order: list[str] = Field(
+        description=(
+            "Recommended slide sequence for ppt_agent. "
+            "e.g. ['title','executive_summary','performance','funnel',...,'recommendations']"
+        )
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # LangGraph pipeline state
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -256,31 +382,190 @@ class PipelineState(TypedDict, total=False):
     """Shared state dict passed through every node of the LangGraph pipeline."""
 
     # ── inputs ────────────────────────────────────────────────────────────────
-    job_id: str
-    period: str                        # "daily" | "weekly" | "monthly"
-    domain_description: str
-    raw_logs: list[dict]               # raw weekly log records
-    log_ids: list[str]                 # MongoDB IDs of raw log documents
+    # str/dict fields use _keep reducer so LangGraph preserves them when nodes
+    # do not explicitly return the key (LangGraph 1.x resets unwritten str fields to None).
+    job_id: Annotated[str, _keep]
+    period: Annotated[str, _keep]               # "daily" | "weekly" | "monthly"
+    domain_description: Annotated[str, _keep]
+    raw_logs: list[dict]                         # raw weekly log records
+    log_ids: list[str]                           # MongoDB IDs of raw log documents
+    week_start: Annotated[str, _keep]            # "YYYYMMDD"
+    week_end: Annotated[str, _keep]              # "YYYYMMDD"
 
     # ── context_agent output ──────────────────────────────────────────────────
-    domain_context: dict               # DomainContext.model_dump()
+    domain_context: Annotated[dict, _keep]       # DomainContext.model_dump()
 
     # ── supervisor output ─────────────────────────────────────────────────────
-    sub_agents_plan: list[str]         # ordered list of sub-agent names to run
+    sub_agents_plan: list[str]                   # ordered list of sub-agent names to run
 
     # ── schema_mapping_agent output ───────────────────────────────────────────
     normalized_logs: list[dict]
+    field_mapping: Annotated[dict, _keep]
 
     # ── sub-agent outputs ─────────────────────────────────────────────────────
-    funnel_metrics: dict
-    cohort_metrics: dict
-    journey_metrics: dict
-    performance_metrics: dict
-    anomaly_metrics: dict
-    prediction_metrics: dict
+    funnel_metrics: Annotated[dict, _keep]
+    cohort_metrics: Annotated[dict, _keep]
+    journey_metrics: Annotated[dict, _keep]
+    performance_metrics: Annotated[dict, _keep]
+    anomaly_metrics: Annotated[dict, _keep]
+    prediction_metrics: Annotated[dict, _keep]
 
     # ── insight_agent output ──────────────────────────────────────────────────
-    insight_report: dict
+    insight_report: Annotated[dict, _keep]
 
     # ── ppt_agent output ──────────────────────────────────────────────────────
-    ppt_url: str
+    ppt_url: Annotated[str, _keep]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Sub-agent output validation models
+# Each agent validates its own output dict against these before returning.
+# ──────────────────────────────────────────────────────────────────────────────
+
+class FunnelStepResult(BaseModel):
+    event_name: str
+    user_count: int
+    drop_off_rate: float
+    conversion_rate: float
+
+
+class FunnelMetrics(BaseModel):
+    steps: list[FunnelStepResult]
+    overall_conversion_rate: float
+    biggest_drop_off_step: str
+    breakdowns: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def check_steps_non_empty(self) -> "FunnelMetrics":
+        if not self.steps:
+            raise ValueError("funnel_metrics.steps must not be empty")
+        return self
+
+
+class CohortWeekData(BaseModel):
+    week_offset: int
+    retained_users: int
+    retention_rate: float
+    revenue: float
+    revenue_per_user: float
+
+
+class CohortEntry(BaseModel):
+    cohort_week: str
+    cohort_size: int
+    weeks: list[CohortWeekData]
+
+
+class CohortSummary(BaseModel):
+    avg_week1_retention: float
+    best_retention_cohort: str | None
+    typical_churn_week: int | None
+    new_buyer_trend: Literal["increasing", "decreasing", "stable"]
+
+
+class CohortMetrics(BaseModel):
+    cohort_definition: str
+    cohorts: list[CohortEntry]
+    summary: CohortSummary
+
+
+class JourneyPathEntry(BaseModel):
+    path: list[str]
+    session_count: int
+    ratio: float
+
+
+class JourneySummary(BaseModel):
+    total_sessions: int
+    converted_sessions: int
+    churned_sessions: int
+    most_common_converted_path: list[str]
+    pre_churn_pattern: str
+
+
+class JourneyMetrics(BaseModel):
+    converted_paths: list[JourneyPathEntry]
+    churned_paths: list[JourneyPathEntry]
+    transition_matrix: dict[str, dict[str, float]]
+    summary: JourneySummary
+
+
+class PerformanceKPIs(BaseModel):
+    total_revenue: float
+    transaction_count: int
+    arpu: float
+    session_count: int
+    conversion_rate: float
+    bounce_rate: float
+
+
+class PerformanceDailyEntry(BaseModel):
+    date: str
+    revenue: float
+    transaction_count: int
+    session_count: int
+
+
+class PerformanceMetrics(BaseModel):
+    period: dict[str, str]
+    kpis: PerformanceKPIs
+    daily_breakdown: list[PerformanceDailyEntry]
+    by_traffic_source: list[dict[str, Any]]
+    by_device_category: list[dict[str, Any]]
+    by_item_category: list[dict[str, Any]]
+    wow_change: dict[str, Any] | None = None
+
+
+class AnomalyEntry(BaseModel):
+    metric: str
+    date: str
+    observed_value: float
+    expected_mean: float
+    expected_std: float
+    z_score: float
+    direction: Literal["high", "low"]
+    llm_interpretation: str | None = None
+
+
+class AnomalyCleanMetric(BaseModel):
+    metric: str
+    max_z_score: float
+    status: str
+
+
+class AnomalySummary(BaseModel):
+    total_anomalies: int
+    affected_metrics: list[str]
+    most_abnormal_date: str | None
+
+
+class AnomalyMetrics(BaseModel):
+    method: str
+    threshold: float
+    lookback_weeks: int
+    anomalies: list[AnomalyEntry]
+    clean_metrics: list[AnomalyCleanMetric]
+    summary: AnomalySummary
+
+
+class PredictionEntry(BaseModel):
+    target: str
+    historical: list[dict[str, Any]]
+    predicted_value: float
+    confidence_interval: dict[str, float]
+    trend_direction: Literal["increasing", "decreasing", "stable"]
+    trend_slope: float
+    llm_comment: str | None = None
+    skipped: bool = False
+
+
+class PredictionSummary(BaseModel):
+    overall_trend: Literal["increasing", "decreasing", "stable"]
+    data_quality_warning: str | None = None
+
+
+class PredictionMetrics(BaseModel):
+    method: str
+    lookback_weeks: int
+    predictions: list[PredictionEntry]
+    summary: PredictionSummary

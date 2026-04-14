@@ -123,7 +123,7 @@ state["raw_logs"]
         │                     └── _try_web_search()   # Tavily 웹 검색 (미구현 시 [] 반환)
         │
         ▼
-  ChatOpenAI.with_structured_output(DomainContext)
+  ChatOpenAI.with_structured_output(DomainContext, method="function_calling")
   (gpt-4o-mini, temperature=0)
         │
         ▼
@@ -146,6 +146,14 @@ state["raw_logs"]
 - **원인**: `typing.Any`를 `context_agent.py`에서 import했으나 실제 사용처가 없음
   (`Any`는 `models.py`의 `DomainContext`에서만 사용)
 - **해결**: `context_agent.py`에서 `from typing import Any` 제거 완료
+
+### `openai.BadRequestError: Invalid schema for response_format` (테스트 실패)
+- **원인**: OpenAI Structured Outputs strict mode는 모든 object 타입에 `additionalProperties: false`를 요구.
+  `dict[str, Any]` 같은 자유형 타입은 이 조건을 자동으로 만족시킬 수 없어 400 에러 발생.
+- **에러 메시지**: `In context=('properties', 'industry_benchmarks'), 'additionalProperties' is required to be supplied and to be false`
+- **해결**: `.with_structured_output(DomainContext, method="function_calling")`으로 변경.
+  `function_calling` 방식은 strict mode를 사용하지 않아 `dict[str, Any]` 필드를 허용함.
+- **동일 이슈**: `insight_agent.py`의 `InsightReport`에도 동일하게 적용
 
 ---
 
