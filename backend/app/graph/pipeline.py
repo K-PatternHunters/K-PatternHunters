@@ -111,6 +111,8 @@ async def analysis_dispatcher(state: dict) -> dict:
     )
 
     merged: dict = {}
+    all_validation_errors: dict = {}
+
     for name, result in zip(valid, results):
         if isinstance(result, BaseException):
             logger.error(
@@ -120,7 +122,13 @@ async def analysis_dispatcher(state: dict) -> dict:
                 exc_info=result,
             )
         else:
+            # validation_errors는 여러 agent에서 나올 수 있으므로 별도 deep merge
+            if "validation_errors" in result:
+                all_validation_errors.update(result.pop("validation_errors"))
             merged.update(result)
+
+    if all_validation_errors:
+        merged["validation_errors"] = all_validation_errors
 
     return merged
 

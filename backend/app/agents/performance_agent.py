@@ -16,6 +16,10 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 
+from pydantic import ValidationError
+
+from app.core.models import PerformanceMetrics
+from app.agents._agent_utils import error_patch, validate_or_retry
 from app.agents._ga4_utils import (
     get_device_category,
     get_purchase_revenue,
@@ -152,101 +156,127 @@ def _compute_kpis(agg: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Business-logic validation
+# ---------------------------------------------------------------------------
+
+def _validate(metrics: dict) -> list[str]:
+    errors: list[str] = []
+    kpis = metrics.get("kpis", {})
+    if kpis.get("session_count", 0) == 0:
+        errors.append(
+            "session_count == 0 — 해당 기간에 session_id를 가진 이벤트가 없음, "
+            "week_start/week_end 범위 또는 raw_logs 데이터 확인 필요"
+        )
+    return errors
+
+
+# ---------------------------------------------------------------------------
 # Agent entry point
 # ---------------------------------------------------------------------------
 
 async def performance_agent(state: dict) -> dict:
     """LangGraph node: aggregate weekly KPIs with breakdowns and WoW change."""
-    week_start: str = state.get("week_start", "")
-    week_end: str = state.get("week_end", "")
-    raw_logs: list[dict] = state.get("raw_logs", [])
 
-    # Current week aggregation
-    agg = _aggregate_week(raw_logs, week_start, week_end)
-    kpis = _compute_kpis(agg)
+    async def _run(s: dict) -> tuple[dict, list[str]]:
+        week_start: str = s.get("week_start", "")
+        week_end: str = s.get("week_end", "")
+        raw_logs: list[dict] = s.get("raw_logs", [])
 
-    # Daily breakdown
-    daily_breakdown = []
-    for date in sorted(agg["daily"].keys()):
-        d = agg["daily"][date]
-        daily_breakdown.append({
-            "date": date,
-            "revenue": round(d["revenue"], 2),
-            "transaction_count": len(d["transaction_ids"]),
-            "session_count": len(d["session_ids"]),
-        })
+        agg = _aggregate_week(raw_logs, week_start, week_end)
+        kpis = _compute_kpis(agg)
 
-    # By traffic source
-    by_traffic_source = []
-    for source, d in sorted(agg["by_source"].items(), key=lambda x: -len(x[1]["session_ids"])):
-        sc = len(d["session_ids"])
-        tc = len(d["transaction_ids"])
-        by_traffic_source.append({
-            "source": source,
-            "session_count": sc,
-            "transaction_count": tc,
-            "revenue": round(d["revenue"], 2),
-            "conversion_rate": round(tc / sc, 4) if sc > 0 else 0.0,
-        })
+        daily_breakdown = []
+        for date in sorted(agg["daily"].keys()):
+            d = agg["daily"][date]
+            daily_breakdown.append({
+                "date": date,
+                "revenue": round(d["revenue"], 2),
+                "transaction_count": len(d["transaction_ids"]),
+                "session_count": len(d["session_ids"]),
+            })
 
-    # By device category
-    by_device_category = []
-    for device, d in sorted(agg["by_device"].items(), key=lambda x: -len(x[1]["session_ids"])):
-        sc = len(d["session_ids"])
-        tc = len(d["transaction_ids"])
-        by_device_category.append({
-            "device": device,
-            "session_count": sc,
-            "transaction_count": tc,
-            "revenue": round(d["revenue"], 2),
-            "conversion_rate": round(tc / sc, 4) if sc > 0 else 0.0,
-        })
+        by_traffic_source = []
+        for source, d in sorted(agg["by_source"].items(), key=lambda x: -len(x[1]["session_ids"])):
+            sc = len(d["session_ids"])
+            tc = len(d["transaction_ids"])
+            by_traffic_source.append({
+                "source": source,
+                "session_count": sc,
+                "transaction_count": tc,
+                "revenue": round(d["revenue"], 2),
+                "conversion_rate": round(tc / sc, 4) if sc > 0 else 0.0,
+            })
 
-    # By item category
-    by_item_category = []
-    for category, d in sorted(agg["by_category"].items(), key=lambda x: -x[1]["revenue"]):
-        vc = d["view_count"]
-        by_item_category.append({
-            "category": category,
-            "view_count": vc,
-            "add_to_cart_count": d["add_to_cart_count"],
-            "purchase_count": d["purchase_count"],
-            "revenue": round(d["revenue"], 2),
-            "purchase_rate": round(d["purchase_count"] / vc, 4) if vc > 0 else 0.0,
-        })
+        by_device_category = []
+        for device, d in sorted(agg["by_device"].items(), key=lambda x: -len(x[1]["session_ids"])):
+            sc = len(d["session_ids"])
+            tc = len(d["transaction_ids"])
+            by_device_category.append({
+                "device": device,
+                "session_count": sc,
+                "transaction_count": tc,
+                "revenue": round(d["revenue"], 2),
+                "conversion_rate": round(tc / sc, 4) if sc > 0 else 0.0,
+            })
 
-    # WoW change: aggregate prior week
-    prior_start = shift_days(week_start, -7)
-    prior_end = shift_days(week_end, -7)
-    prior_agg = _aggregate_week(raw_logs, prior_start, prior_end)
-    prior_kpis = _compute_kpis(prior_agg)
+        by_item_category = []
+        for category, d in sorted(agg["by_category"].items(), key=lambda x: -x[1]["revenue"]):
+            vc = d["view_count"]
+            by_item_category.append({
+                "category": category,
+                "view_count": vc,
+                "add_to_cart_count": d["add_to_cart_count"],
+                "purchase_count": d["purchase_count"],
+                "revenue": round(d["revenue"], 2),
+                "purchase_rate": round(d["purchase_count"] / vc, 4) if vc > 0 else 0.0,
+            })
 
-    wow_change: dict | None = None
-    if prior_kpis["session_count"] > 0:
-        def _wow(curr, prev):
-            return round((curr - prev) / prev, 4) if prev != 0 else None
+        prior_start = shift_days(week_start, -7)
+        prior_end = shift_days(week_end, -7)
+        prior_agg = _aggregate_week(raw_logs, prior_start, prior_end)
+        prior_kpis = _compute_kpis(prior_agg)
 
-        wow_change = {
-            "total_revenue": _wow(kpis["total_revenue"], prior_kpis["total_revenue"]),
-            "transaction_count": _wow(kpis["transaction_count"], prior_kpis["transaction_count"]),
-            "session_count": _wow(kpis["session_count"], prior_kpis["session_count"]),
-            "conversion_rate": _wow(kpis["conversion_rate"], prior_kpis["conversion_rate"]),
+        wow_change: dict | None = None
+        if prior_kpis["session_count"] > 0:
+            def _wow(curr, prev):
+                return round((curr - prev) / prev, 4) if prev != 0 else None
+
+            wow_change = {
+                "total_revenue": _wow(kpis["total_revenue"], prior_kpis["total_revenue"]),
+                "transaction_count": _wow(kpis["transaction_count"], prior_kpis["transaction_count"]),
+                "session_count": _wow(kpis["session_count"], prior_kpis["session_count"]),
+                "conversion_rate": _wow(kpis["conversion_rate"], prior_kpis["conversion_rate"]),
+            }
+
+        metrics = {
+            "period": {"week_start": week_start, "week_end": week_end},
+            "kpis": kpis,
+            "daily_breakdown": daily_breakdown,
+            "by_traffic_source": by_traffic_source,
+            "by_device_category": by_device_category,
+            "by_item_category": by_item_category,
+            "wow_change": wow_change,
         }
+        return metrics, _validate(metrics)
 
-    performance_metrics = {
-        "period": {"week_start": week_start, "week_end": week_end},
-        "kpis": kpis,
-        "daily_breakdown": daily_breakdown,
-        "by_traffic_source": by_traffic_source,
-        "by_device_category": by_device_category,
-        "by_item_category": by_item_category,
-        "wow_change": wow_change,
-    }
+    performance_metrics, validation_errors = await validate_or_retry(
+        run_fn=_run,
+        state=state,
+        agent_name="performance_agent",
+        state_key="performance_metrics",
+    )
 
+    kpis = performance_metrics.get("kpis", {})
     logger.info(
         "performance_agent: revenue=%.2f  transactions=%d  cvr=%.4f",
-        kpis["total_revenue"],
-        kpis["transaction_count"],
-        kpis["conversion_rate"],
+        kpis.get("total_revenue", 0),
+        kpis.get("transaction_count", 0),
+        kpis.get("conversion_rate", 0),
     )
-    return {"performance_metrics": performance_metrics}
+
+    try:
+        PerformanceMetrics(**performance_metrics)
+    except ValidationError as exc:
+        logger.warning("performance_agent: schema validation failed — %s", exc)
+
+    return {"performance_metrics": performance_metrics, **error_patch("performance_agent", validation_errors)}
