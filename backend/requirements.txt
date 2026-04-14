@@ -28,3 +28,7 @@ pydantic-settings
 # Code quality (dev)
 ruff
 black
+
+# Testing (dev)
+pytest
+pytest-asyncio

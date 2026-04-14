@@ -4,22 +4,172 @@
 
 GA4 ecommerce 행동 데이터를 weekly로 분석하여 자동으로 PPT 보고서를 생성하는 멀티 에이전트 시스템.
 
-- **Input:** Weekly raw GA4 event logs (MongoDB) + domain category
-- **Output:** 행동 패턴 분석 결과 + 자동 생성 PPT 보고서
+- **Input:** Weekly raw GA4 event logs + domain category (사용자 입력)
+- **Output:** 행동 패턴 분석 결과 + 자동 생성 PPT 보고서 (한국어)
 
 ---
 
 ## 팀 담당 분리
 
-**이 레포에서 내가 담당하는 범위:**
-- Supervisor Agent
-- Schema Mapping Agent
-- Funnel / Cohort / Journey / Performance / Anomaly / Prediction Agent
+| 담당자 | 브랜치 | 담당 범위 |
+|---|---|---|
+| **epk4429** | `backend_dj` | context_agent, insight_agent, models, tests |
+| **jy팀** | `backend_jy` | supervisor, schema_mapping, funnel, cohort, journey, performance, anomaly, prediction, _ga4_utils |
+| **front팀** | `front` | Vue 3 프론트엔드 |
 
-**타팀 담당 (이미 인터페이스만 정의됨, 건드리지 말 것):**
-- Context Agent — 도메인 RAG + web search → `AnalysisContext` 생성
-- Insight Agent — 6개 분석 결과 종합 해석
-- PPT Agent — 저번 주 보고서 비교 + PowerPoint 생성
+> **주의**: `ppt_agent.py`는 아직 미구현 상태 (placeholder).
+
+---
+
+## 전체 파이프라인
+
+```
+[START]
+   │
+context_agent        ← epk4429 구현. 도메인 분석 컨텍스트 생성 (LLM + RAG + 웹검색)
+   │
+supervisor           ← jy팀 구현. domain_context.recommended_sub_agents 기반 라우팅 결정
+   │
+schema_mapping_agent ← jy팀 구현. GA4 필드 → 정규화 필드명 매핑
+   │
+   ├── funnel_agent
+   ├── cohort_agent
+   ├── journey_agent       ← jy팀 구현. 병렬 실행 (LangGraph 설계)
+   ├── performance_agent
+   ├── anomaly_agent
+   └── prediction_agent
+          │
+   insight_agent      ← epk4429 구현. 6개 분석 결과 종합 → 슬라이드별 InsightReport 생성 (LLM)
+          │
+   ppt_agent          ← 미구현 (placeholder)
+          │
+        [END]
+```
+
+---
+
+## 구현 현황
+
+### epk4429 (backend_dj) 담당
+
+| 파일 | 상태 | 비고 |
+|---|---|---|
+| `app/core/models.py` | ✅ 완료 | DomainContext, InsightReport, SlideContent, PipelineState, *Config 모델 전체 정의 |
+| `app/core/config.py` | ✅ 완료 | pydantic-settings BaseSettings, .env 로드, lru_cache |
+| `app/agents/context_agent.py` | ✅ 완료 | gpt-4o-mini, function_calling, RAG/웹검색 graceful fallback |
+| `app/agents/insight_agent.py` | ✅ 완료 | gpt-4o, function_calling, 한국어 출력, 슬라이드 단위 구조화 |
+| `app/agents/md_agents/context_agent.md` | ✅ 완료 | 설계 결정, 트러블슈팅 기록 |
+| `app/agents/md_agents/insight_agent.md` | ✅ 완료 | 설계 결정, 트러블슈팅 기록 |
+| `tests/conftest.py` | ✅ 완료 | GA4 BigQuery export 포맷 샘플 데이터 (20개 이벤트) |
+| `tests/test_context_agent.py` | ✅ 완료 | 16개 테스트 |
+| `tests/test_insight_agent.py` | ✅ 완료 | 12개 테스트 |
+| `tests/test_pipeline.py` | ✅ 완료 | E2E 통합 테스트 10개 (전체 파이프라인) |
+| `pytest.ini` | ✅ 완료 | asyncio_mode=auto |
+| `.env.example` | ✅ 완료 | 환경변수 템플릿 |
+
+### jy팀 (backend_jy) 담당
+
+| 파일 | 상태 | 비고 |
+|---|---|---|
+| `app/agents/_ga4_utils.py` | ✅ 완료 | 공용 GA4 파싱 유틸 (전 agent import) |
+| `app/agents/supervisor.py` | ✅ 완료 | deterministic, LLM 없음 |
+| `app/agents/schema_mapping_agent.py` | ✅ 완료 | GA4 baseline + LLM (불일치 시만) |
+| `app/agents/funnel_agent.py` | ✅ 완료 | 유저 단위 집계, breakdown |
+| `app/agents/cohort_agent.py` | ✅ 완료 | first_purchase_week 코호트, retention/revenue |
+| `app/agents/journey_agent.py` | ✅ 완료 | 세션 시퀀스, top-N 경로, transition matrix |
+| `app/agents/performance_agent.py` | ✅ 완료 | 주간 KPI + daily/source/device/category + WoW |
+| `app/agents/anomaly_agent.py` | ✅ 완료 | Z-score + LLM 한국어 해석 |
+| `app/agents/prediction_agent.py` | ✅ 완료 | linear least-squares + LLM 한국어 코멘트 |
+
+### 미완료
+
+| 파일 | 상태 | 비고 |
+|---|---|---|
+| `app/agents/ppt_agent.py` | ❌ placeholder | python-pptx 구현 필요 |
+| `app/graph/pipeline.py` | ❌ placeholder | LangGraph StateGraph 정의 필요 |
+| `app/db/mongo.py` | ❌ placeholder | motor AsyncIOMotorClient 연결 필요 |
+| `app/tools/rag_tool.py` | ❌ placeholder | Qdrant RAG 구현 필요 (현재 빈 리스트 반환) |
+| `app/tools/web_search_tool.py` | ❌ placeholder | Tavily 웹검색 구현 필요 (현재 빈 리스트 반환) |
+
+---
+
+## 핵심 데이터 모델 (`app/core/models.py`)
+
+### PipelineState (LangGraph state dict)
+
+```python
+class PipelineState(TypedDict, total=False):
+    # 입력
+    job_id: str
+    period: str                  # "weekly"
+    domain_description: str
+    raw_logs: list[dict]
+    log_ids: list[str]
+    week_start: str              # "YYYYMMDD"
+    week_end: str                # "YYYYMMDD"
+
+    # context_agent 출력
+    domain_context: dict         # DomainContext.model_dump()
+
+    # supervisor 출력
+    sub_agents_plan: list[str]
+
+    # schema_mapping_agent 출력
+    field_mapping: dict
+
+    # 분석 에이전트 출력
+    funnel_metrics: dict
+    cohort_metrics: dict
+    journey_metrics: dict
+    performance_metrics: dict
+    anomaly_metrics: dict
+    prediction_metrics: dict
+
+    # insight_agent 출력
+    insight_report: dict         # InsightReport.model_dump()
+
+    # ppt_agent 출력
+    ppt_url: str
+```
+
+### DomainContext (context_agent 출력)
+
+```
+DomainContext
+├── domain, domain_summary
+├── analysis_priorities, recommended_sub_agents
+├── key_metrics, interpretation_guidelines, industry_benchmarks
+├── funnel_config       → FunnelConfig(steps)
+├── cohort_config       → CohortConfig(cohort_basis, user_key, metrics)
+├── journey_config      → JourneyConfig(top_n, max_depth, split_by_outcome)
+├── performance_config  → PerformanceConfig(kpis, breakdowns)
+├── anomaly_config      → AnomalyConfig(target_metrics, method, threshold)
+├── prediction_config   → PredictionConfig(targets, method, lookback_weeks)
+├── log_schema_hints
+├── rag_references
+└── search_references
+```
+
+각 분석 에이전트는 `state["domain_context"]["funnel_config"]["steps"]` 형태로 접근.
+
+### InsightReport (insight_agent 출력)
+
+```
+InsightReport
+├── domain, analysis_period, overall_sentiment
+├── executive_summary, top_findings, recommendations
+├── performance_slide   → SlideContent | None
+├── funnel_slide        → SlideContent | None
+├── cohort_slide        → SlideContent | None
+├── journey_slide       → SlideContent | None
+├── anomaly_slide       → SlideContent | None
+├── prediction_slide    → SlideContent | None
+├── cross_analysis_findings
+└── slide_order         (ppt_agent용 슬라이드 순서)
+
+SlideContent 필드: slide_type, title, headline, bullets,
+                   metrics, chart_type, chart_data_key, speaker_notes
+```
 
 ---
 
@@ -27,248 +177,208 @@ GA4 ecommerce 행동 데이터를 weekly로 분석하여 자동으로 PPT 보고
 
 - **Origin:** GA4 BigQuery `ga4_obfuscated_sample_ecommerce` 샘플 데이터셋
 - **Storage:** MongoDB `customer_behavior` DB, `raw_logs` collection
-- **Document 구조:** GA4 BigQuery export nested 원본 그대로 (`event_params[]`, `items[]`, `ecommerce{}` 등)
-- **Weekly 구분:** `event_date` 필드 range (format: `YYYYMMDD`, e.g. `20210101`~`20210107`)
-- **볼륨:** 수만~수십만 documents/week 가정 → **모든 agent는 MongoDB aggregation pipeline 기반으로 처리, raw document 전체 메모리 로드 금지**
+- **Document 구조:** GA4 BigQuery export nested 원본 그대로
 
----
-
-## 아키텍처
-
-### Agent Pipeline
-
-```
-[START]
-   │
-context_agent      ← 타팀. AnalysisContext 생성 후 supervisor로 전달
-   │
-supervisor         ← schema_mapping 완료 후 분석 6개 병렬 팬아웃
-   │
-schema_mapping_agent
-   │
-   ├── funnel_agent
-   ├── cohort_agent
-   ├── journey_agent       ← 병렬 실행
-   ├── performance_agent
-   ├── anomaly_agent
-   └── prediction_agent
-          │
-   insight_agent   ← 타팀
-          │
-   ppt_agent       ← 타팀
-          │
-        [END]
-```
-
-### LangGraph State
-
-중간 결과는 MongoDB에 저장하지 않고 LangGraph state로만 전달. 최종 결과만 DB 저장.
-
-```python
-class PipelineState(TypedDict):
-    week_start: str
-    week_end: str
-    domain: str
-    context: AnalysisContext      # Context Agent output
-    field_mapping: dict           # Schema Mapping Agent output
-    funnel_result: dict
-    cohort_result: dict
-    journey_result: dict
-    performance_result: dict
-    anomaly_result: dict
-    prediction_result: dict
-    insight: dict                 # 타팀
-    ppt_url: str                  # 타팀
-```
-
-### AnalysisContext (Context Agent → Supervisor 전달 스펙)
+### GA4 필드 구조 (중요 — flat string이 아닌 nested object)
 
 ```python
 {
-    "domain": "ecommerce",
-    "funnel": {
-        "steps": ["session_start", "view_item", "add_to_cart", "begin_checkout", "purchase"],
-        "key_metric": "conversion_rate"
-    },
-    "cohort": {
-        "definition": "first_purchase_week",
-        "metrics": ["retention_rate", "revenue_per_user"]
-    },
-    "journey": {
-        "top_n_paths": 10,
-        "max_depth": 5,
-        "entry_events": ["session_start"],
-        "exit_events": ["purchase", "session_end"]
-    },
-    "performance": {
-        "kpis": ["total_revenue", "transaction_count", "arpu", "session_count", "conversion_rate", "bounce_rate"],
-        "breakdowns": ["traffic_source", "device_category"]
-    },
-    "anomaly": {
-        "target_metrics": ["daily_revenue", "daily_session_count", "daily_conversion_rate"],
-        "method": "zscore",
-        "threshold": 2.0
-    },
-    "prediction": {
-        "targets": ["next_week_revenue", "next_week_transaction_count"],
-        "method": "linear_trend",
-        "lookback_weeks": 4
-    }
+    "event_date": "20240318",          # "YYYYMMDD"
+    "event_timestamp": 1710720000000000,
+    "event_name": "purchase",
+    "user_pseudo_id": "user_001",
+    "event_params": [{"key": "ga_session_id", "value": {"int_value": 1001}}],
+    "traffic_source": {"source": "google", "medium": "cpc", "name": "spring_sale"},  # nested!
+    "device": {"category": "mobile"},   # nested!
+    "geo": {"country": "KR", "city": "Seoul"},
+    "ecommerce": {"transaction_id": "T001", "purchase_revenue": 89000},  # purchase_revenue!
+    "items": [{"item_id": "SKU-A", "item_name": "...", "item_category": "...", "price": 89000, "quantity": 1}]
 }
 ```
+
+> ⚠️ `traffic_source`는 string이 아닌 `{"source": "...", "medium": "..."}` dict.
+> `ecommerce` revenue 키는 `purchase_revenue` (value, revenue 아님).
+> `_ga4_utils.py`의 파서가 이 포맷을 기준으로 작성됨.
 
 ---
 
 ## 기술 스택
 
 | 역할 | 기술 |
-|------|------|
+|---|---|
 | Web framework | FastAPI |
-| LLM | OpenAI GPT (`langchain-openai`) |
+| LLM | OpenAI GPT-4o / GPT-4o-mini (`langchain-openai`) |
 | Agent orchestration | LangGraph (StateGraph) |
 | DB (async) | MongoDB — `motor` |
 | Vector DB | Qdrant |
 | Task queue | Celery + Redis |
 | PPT 생성 | python-pptx |
-
-- LangGraph pipeline은 Celery task 안에서 실행됨
-- `POST /analysis/run` → Celery 등록 → `job_id` 즉시 반환 → `GET /analysis/status/{job_id}` 폴링
-
----
-
-## 구현 현황
-
-### 완료된 파일
-
-| 파일 | 상태 | 비고 |
-|------|------|------|
-| `agents/supervisor.py` | ✅ 완료 | deterministic, LLM 없음 |
-| `agents/schema_mapping_agent.py` | ✅ 완료 | 표준 GA4 baseline + LLM(불일치 시만) |
-| `agents/funnel_agent.py` | ✅ 완료 | 유저 단위 집계, breakdown 포함 |
-| `agents/cohort_agent.py` | ✅ 완료 | first_purchase_week 코호트, retention/revenue |
-| `agents/journey_agent.py` | ✅ 완료 | 세션 시퀀스, top-N 경로, transition matrix |
-| `agents/performance_agent.py` | ✅ 완료 | 주간 KPI + daily/source/device/category + WoW |
-| `agents/anomaly_agent.py` | ✅ 완료 | Z-score + LLM 한국어 해석 |
-| `agents/prediction_agent.py` | ✅ 완료 | linear least-squares + LLM 한국어 코멘트 |
-| `agents/_ga4_utils.py` | ✅ 완료 | 공용 파싱 유틸 (모든 agent에서 import) |
-
-### 미완료 (DB 연결 후 작업 필요)
-
-- `graph/pipeline.py` — LangGraph StateGraph 정의 (supervisor → schema_mapping → 6개 병렬 → insight)
-- `db/mongo.py` — motor AsyncIOMotorClient 연결
-- `core/config.py` — BaseSettings 실제 구현 (현재 placeholder)
-- 각 agent의 `raw_logs` 처리 → MongoDB aggregation pipeline으로 교체
+| 설정 관리 | pydantic-settings (.env 로드) |
+| 테스트 | pytest + pytest-asyncio |
 
 ---
 
-## 파싱 유틸 (_ga4_utils.py)
+## 환경 설정
 
-GA4 raw log에서 필드를 추출하는 함수들을 `app/agents/_ga4_utils.py`에 집중.
-**agent 파일에서 직접 파싱 로직 구현 금지** — 반드시 이 모듈에서 import.
+```bash
+# 1. 가상환경 활성화
+cd backend
+source .venv/bin/activate
 
-```python
-from app.agents._ga4_utils import (
-    get_event_param, get_session_id,
-    get_traffic_source, get_device_category,
-    get_purchase_revenue, get_transaction_id,
-    in_range, shift_days, date_to_iso_week, date_to_weekday, week_offset,
-)
+# 2. .env 파일 생성
+cp .env.example .env
+# .env에 OPENAI_API_KEY=sk-... 입력
+
+# 3. 의존성 설치
+pip install -r requirements.txt
+```
+
+### .env 필수 변수
+
+```
+OPENAI_API_KEY=sk-...
+MONGODB_URI=mongodb://localhost:27017/customer_behavior
+QDRANT_URL=http://localhost:6333
+REDIS_URL=redis://localhost:6379/0
 ```
 
 ---
 
-## state 키 실제 명세 (context_agent.py 기준)
+## 테스트 실행
 
-CLAUDE.md 초안과 models.py 일부 표기가 다름. **context_agent.py가 정답**.
+```bash
+cd backend
 
-| 키 | 타입 | 생성자 |
-|----|------|--------|
-| `domain_context` | `dict` (DomainContext.model_dump()) | context_agent |
-| `field_mapping` | `dict` | schema_mapping_agent |
-| `funnel_metrics` | `dict` | funnel_agent |
-| `cohort_metrics` | `dict` | cohort_agent |
-| `journey_metrics` | `dict` | journey_agent |
-| `performance_metrics` | `dict` | performance_agent |
-| `anomaly_metrics` | `dict` | anomaly_agent |
-| `prediction_metrics` | `dict` | prediction_agent |
+# context_agent만
+python -m pytest tests/test_context_agent.py -v -s
 
-각 agent config 접근: `state["domain_context"]["funnel_config"]["steps"]` 형태.
+# insight_agent만
+python -m pytest tests/test_insight_agent.py -v -s
+
+# 전체 파이프라인 E2E (약 2분 소요, LLM 호출 포함)
+python -m pytest tests/test_pipeline.py -v -s
+
+# 전체
+python -m pytest tests/ -v
+```
+
+### 테스트 통과 현황 (마지막 확인: 2026-04-14)
+
+- `test_context_agent.py` — 16개 중 15개 PASS (1개 ValueError 검증용)
+- `test_insight_agent.py` — 12개 PASS
+- `test_pipeline.py` — **10/10 PASS** (E2E 전체 파이프라인)
 
 ---
 
-## 프로젝트 구조
+## 핵심 설계 결정 및 트러블슈팅
+
+### 1. DomainContext 포맷: Pydantic → dict
+
+LangGraph state는 TypedDict(dict) 기반이므로 `.model_dump()`로 변환해 저장.
+하위 에이전트는 파싱 없이 `state["domain_context"]["funnel_config"]["steps"]`로 직접 접근.
+
+### 2. InsightReport: 슬라이드 단위 구조화
+
+ppt_agent가 LLM 재호출 없이 바로 렌더링할 수 있도록 `SlideContent` 단위로 출력.
+`chart_type`(funnel_chart/heatmap/sankey 등), `chart_data_key`(원본 metrics 참조 키) 포함.
+
+### 3. method="function_calling" 필수
+
+`dict[str, Any]` 타입 필드가 포함된 Pydantic 모델을 OpenAI structured output에 사용 시
+strict mode에서 `additionalProperties: false` 오류 발생.
+→ `.with_structured_output(Model, method="function_calling")` 으로 해결.
+
+### 4. GA4 샘플 데이터 포맷
+
+`_ga4_utils.py`는 GA4 BigQuery export 원본 포맷(nested objects)을 기대함.
+테스트 fixture에서 `traffic_source`를 flat string으로 쓰면 AttributeError 발생.
+→ `conftest.py`에서 `{"source": "google", "medium": "cpc"}` nested 포맷으로 수정.
+
+### 5. insight_agent 언어 설정
+
+시스템 프롬프트 첫 줄에 한국어 출력 명시.
+`chart_type`, `chart_data_key`, `slide_type` 등 코드성 식별자는 영어 유지.
+
+---
+
+## 에이전트별 상세 노트
+
+각 에이전트의 설계 결정과 트러블슈팅은 아래 위치에 기록:
+
+```
+backend/app/agents/md_agents/
+├── context_agent.md
+└── insight_agent.md
+```
+
+---
+
+## 프로젝트 파일 구조
 
 ```
 K-PatternHunters/
-├── backend/
-│   ├── .venv/                       # Python 가상환경 (requirements.txt 기준)
-│   ├── main.py
-│   └── app/
-│       ├── agents/
-│       │   ├── _ga4_utils.py        # 공용 GA4 파싱 유틸 ← 신규
-│       │   ├── supervisor.py
-│       │   ├── schema_mapping_agent.py
-│       │   ├── funnel_agent.py
-│       │   ├── cohort_agent.py
-│       │   ├── journey_agent.py
-│       │   ├── performance_agent.py
-│       │   ├── anomaly_agent.py
-│       │   ├── prediction_agent.py
-│       │   ├── context_agent.py     ← 타팀
-│       │   ├── insight_agent.py     ← 타팀
-│       │   └── ppt_agent.py         ← 타팀
-│       ├── core/
-│       │   ├── config.py            # BaseSettings (pydantic-settings, .env 로드)
-│       │   └── models.py            # Pydantic v2 모델
-│       ├── db/
-│       │   ├── mongo.py             # motor AsyncIOMotorClient (미완료)
-│       │   └── qdrant.py
-│       ├── graph/
-│       │   └── pipeline.py          # LangGraph StateGraph 정의 (미완료)
-│       ├── routers/
-│       │   ├── analysis.py          # POST /analysis/run
-│       │   └── status.py            # GET /analysis/status/{job_id}
-│       └── tools/
-│           ├── rag_tool.py
-│           └── web_search_tool.py
-├── frontend/                        # Vue 3 (타팀)
+├── CLAUDE.md                        ← 이 파일
+├── docker-compose.yml
 ├── docs/
-│   ├── architecture.md              # 전체 설계 상세
-│   └── agents/                      # Agent별 스펙 문서
+│   ├── architecture.md
+│   └── agents/                      ← jy팀 에이전트 스펙 문서
 │       ├── supervisor.md
 │       ├── schema_mapping.md
-│       ├── funnel.md
-│       ├── cohort.md
-│       ├── journey.md
-│       ├── performance.md
-│       ├── anomaly.md
-│       └── prediction.md
-├── docker-compose.yml
-└── .env                             # OPENAI_API_KEY, MONGODB_URI, QDRANT_URL, REDIS_URL
+│       ├── funnel.md  cohort.md  journey.md
+│       ├── performance.md  anomaly.md  prediction.md
+│       └── ...
+├── frontend/                        ← Vue 3 (front팀)
+└── backend/
+    ├── .env                         ← OPENAI_API_KEY 등 (git 제외)
+    ├── .env.example
+    ├── main.py                      ← FastAPI 앱 엔트리포인트
+    ├── requirements.txt
+    ├── pytest.ini
+    ├── .venv/
+    ├── tests/
+    │   ├── conftest.py              ← GA4 샘플 데이터, 공용 fixture
+    │   ├── test_context_agent.py
+    │   ├── test_insight_agent.py
+    │   └── test_pipeline.py        ← E2E 통합 테스트
+    └── app/
+        ├── agents/
+        │   ├── md_agents/           ← 에이전트별 개발 노트
+        │   │   ├── context_agent.md
+        │   │   └── insight_agent.md
+        │   ├── _ga4_utils.py        ← GA4 파싱 유틸 (모든 agent import)
+        │   ├── context_agent.py     ← epk4429
+        │   ├── insight_agent.py     ← epk4429
+        │   ├── supervisor.py        ← jy팀
+        │   ├── schema_mapping_agent.py ← jy팀
+        │   ├── funnel_agent.py      ← jy팀
+        │   ├── cohort_agent.py      ← jy팀
+        │   ├── journey_agent.py     ← jy팀
+        │   ├── performance_agent.py ← jy팀
+        │   ├── anomaly_agent.py     ← jy팀
+        │   ├── prediction_agent.py  ← jy팀
+        │   └── ppt_agent.py         ← 미구현
+        ├── core/
+        │   ├── config.py            ← pydantic-settings, lru_cache
+        │   └── models.py            ← 전체 Pydantic 모델 정의
+        ├── db/
+        │   ├── mongo.py             ← 미구현
+        │   └── qdrant.py
+        ├── graph/
+        │   └── pipeline.py          ← 미구현 (LangGraph StateGraph)
+        ├── routers/
+        │   ├── analysis.py          ← POST /analysis/run
+        │   └── status.py            ← GET /analysis/status/{job_id}
+        └── tools/
+            ├── rag_tool.py          ← 미구현 (Qdrant RAG)
+            └── web_search_tool.py   ← 미구현 (Tavily)
 ```
 
 ---
 
-## 타팀 인터페이스 경계
+## 다음 작업 우선순위
 
-| agent | 담당 | 우리가 넘겨줄 것 |
-|-------|------|-----------------|
-| `insight_agent` | 6개 분석 결과 종합 → 내러티브 | `*_metrics` 6개 키 전부 state에 있으면 됨 |
-| `ppt_agent` | insight_report + Qdrant 저번주 비교 → PPT | `insight_report` dict (타팀 생성) |
-
-**역할 구분 주의**: `anomaly_agent`/`prediction_agent`의 LLM 코멘트는 **지표별 단편 해석**이고, `insight_agent`는 **전체 종합 해석**임. 겹치는 게 아니라 insight_agent의 input 데이터로 들어가는 구조.
-
-**state 키 이름 협의 필요**: 우리는 `funnel_metrics`, `cohort_metrics`... 로 쓰는데, 타팀이 `funnel_result`, `cohort_result`... 를 기대할 수 있음. 타팀 구현 시작 전에 맞춰볼 것.
-
----
-
-## 개발 시 주의사항
-
-1. **agent 구현 전에 반드시 `docs/agents/{agent명}.md` 먼저 확인** — input/output 스펙이 거기 있음
-2. **볼륨 안전**: raw document 전체 메모리 로드 절대 금지, MongoDB aggregation pipeline으로 처리
-3. **LLM 호출 최소화**: Schema Mapping(불일치 시만), Anomaly(이상값 있을 때만), Prediction(결과 코멘트)
-4. **타팀 파일 수정 금지**: `context_agent.py`, `insight_agent.py`, `ppt_agent.py`
-5. **state 기반 데이터 전달**: 중간 결과는 LangGraph state로만, DB 저장은 최종 결과만
-6. **branch**: 현재 작업 브랜치 `backend_jy`
-7. **GA4 파싱은 `_ga4_utils.py`에서만**: agent 파일에 파싱 로직 중복 구현 금지
-8. **테스트**: `cd backend && python test_agents.py` — DB 없이 전 agent 동작 확인 가능
+1. **ppt_agent** — InsightReport.slide_order 순서대로 python-pptx 슬라이드 생성
+2. **pipeline.py** — LangGraph StateGraph 정의 (schema_mapping 후 6개 병렬 팬아웃)
+3. **rag_tool / web_search_tool** — context_agent에서 실제 RAG/웹검색 활성화
+4. **db/mongo.py** — motor 연결 구현, raw_logs MongoDB에서 직접 로드
+5. **routers/analysis.py** — Celery task로 파이프라인 실행 연결

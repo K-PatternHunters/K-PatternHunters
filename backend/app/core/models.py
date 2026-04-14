@@ -249,6 +249,125 @@ class DomainContext(BaseModel):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Insight report — produced by insight_agent, consumed by ppt_agent
+# ──────────────────────────────────────────────────────────────────────────────
+
+class SlideContent(BaseModel):
+    """Ready-to-render content for a single PPT slide.
+
+    ppt_agent can consume this directly without re-interpreting data.
+    """
+
+    slide_type: str = Field(
+        description=(
+            "Slide category. One of: title, executive_summary, performance, "
+            "funnel, cohort, journey, anomaly, prediction, recommendations"
+        )
+    )
+    title: str = Field(description="Slide title text")
+    headline: str = Field(
+        description="One-sentence key message for this slide (displayed as sub-title or callout)"
+    )
+    bullets: list[str] = Field(
+        description="Supporting bullet points (3-5 items)"
+    )
+    metrics: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Key numeric values to display on the slide. "
+            "Keys are metric names, values are numbers or formatted strings."
+        ),
+    )
+    chart_type: str = Field(
+        description=(
+            "Recommended chart/visual type for this slide. "
+            "e.g. funnel_chart, heatmap, sankey, line_chart, bar_chart, kpi_cards, table"
+        )
+    )
+    chart_data_key: str = Field(
+        description=(
+            "The PipelineState key that holds the raw data for the chart "
+            "(e.g. funnel_metrics, cohort_metrics). "
+            "ppt_agent uses this to pull chart data."
+        )
+    )
+    speaker_notes: str = Field(
+        default="",
+        description="Additional context or speaking points — not shown on the slide itself",
+    )
+
+
+class InsightReport(BaseModel):
+    """Structured output from insight_agent.
+
+    Contains all content needed by ppt_agent to generate slides without
+    additional LLM calls or data re-interpretation.
+    Serialised via .model_dump() and stored under ``insight_report`` in PipelineState.
+    """
+
+    # ── Report meta ───────────────────────────────────────────────────────────
+    domain: str = Field(description="Domain category (from domain_context)")
+    analysis_period: str = Field(description="e.g. '2024-W12 (Mar 18–24)'")
+    overall_sentiment: Literal["positive", "negative", "neutral", "mixed"] = Field(
+        description="Overall tone of the week's performance"
+    )
+
+    # ── Executive layer ────────────────────────────────────────────────────────
+    executive_summary: str = Field(
+        description="3-5 sentence narrative summarising the week's most important findings"
+    )
+    top_findings: list[str] = Field(
+        description="Top 3-5 key findings across all analyses, in priority order"
+    )
+    recommendations: list[str] = Field(
+        description="Top 3-5 specific, actionable recommendations based on the findings"
+    )
+
+    # ── Per-analysis slide contents ────────────────────────────────────────────
+    performance_slide: SlideContent | None = Field(
+        default=None,
+        description="Slide content for performance KPIs; None if analysis did not run",
+    )
+    funnel_slide: SlideContent | None = Field(
+        default=None,
+        description="Slide content for funnel analysis; None if analysis did not run",
+    )
+    cohort_slide: SlideContent | None = Field(
+        default=None,
+        description="Slide content for cohort/retention; None if analysis did not run",
+    )
+    journey_slide: SlideContent | None = Field(
+        default=None,
+        description="Slide content for user journey paths; None if analysis did not run",
+    )
+    anomaly_slide: SlideContent | None = Field(
+        default=None,
+        description="Slide content for anomaly findings; None if analysis did not run",
+    )
+    prediction_slide: SlideContent | None = Field(
+        default=None,
+        description="Slide content for next-week forecast; None if analysis did not run",
+    )
+
+    # ── Cross-analysis findings ────────────────────────────────────────────────
+    cross_analysis_findings: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Insights that emerge from combining multiple analyses "
+            "(e.g. funnel drop-off corroborated by anomaly detection)"
+        ),
+    )
+
+    # ── PPT assembly hints ─────────────────────────────────────────────────────
+    slide_order: list[str] = Field(
+        description=(
+            "Recommended slide sequence for ppt_agent. "
+            "e.g. ['title','executive_summary','performance','funnel',...,'recommendations']"
+        )
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # LangGraph pipeline state
 # ──────────────────────────────────────────────────────────────────────────────
 
