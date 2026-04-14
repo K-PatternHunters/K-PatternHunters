@@ -7,9 +7,9 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
-    MONGODB_URI: str = "mongodb://localhost:27017"
+    MONGODB_URI: str = "mongodb://localhost:27017/customer_behavior"
     QDRANT_URL: str = "http://localhost:6333"
-    REDIS_URL: str = "redis://localhost:6379"
+    REDIS_URL: str = "redis://localhost:6379/0"
     APP_ENV: str = "development"
     SECRET_KEY: str = "dev-secret"
 
