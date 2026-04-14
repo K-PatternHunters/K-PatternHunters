@@ -1,11 +1,9 @@
 """Prediction Agent — linear trend forecast for next-week KPIs + LLM comment.
 
 Input  (PipelineState keys consumed):
-    week_start     : str        — "YYYYMMDD"
-    week_end       : str        — "YYYYMMDD"
-    field_mapping  : dict       — from schema_mapping_agent
-    raw_logs       : list[dict] — weekly raw log records (includes lookback weeks)
-    domain_context : dict       — DomainContext.model_dump()
+    week_start     : str  — "YYYYMMDD"
+    week_end       : str  — "YYYYMMDD"
+    domain_context : dict — DomainContext.model_dump()
 
 Output (PipelineState keys produced):
     prediction_metrics : dict
@@ -22,13 +20,8 @@ from langchain_openai import ChatOpenAI
 from app.core.config import get_settings
 from app.core.models import PredictionMetrics
 from app.agents._agent_utils import error_patch, validate_or_retry
-from app.agents._ga4_utils import (
-    date_to_iso_week,
-    get_purchase_revenue,
-    get_transaction_id,
-    in_range,
-    shift_days,
-)
+from app.agents._ga4_utils import PREPROCESS_STAGE, date_to_iso_week, shift_days
+from app.db.mongo import get_collection
 
 logger = logging.getLogger(__name__)
 
@@ -39,25 +32,55 @@ prediction means for the business. Be concise and mention the predicted value an
 
 
 # ---------------------------------------------------------------------------
-# Weekly aggregation
+# MongoDB aggregation — daily purchase data for a date range
 # ---------------------------------------------------------------------------
 
-def _aggregate_week(raw_logs: list[dict], start: str, end: str) -> dict:
-    revenue = 0.0
-    transaction_ids: set[str] = set()
-    for doc in raw_logs:
-        event_date = doc.get("event_date", "")
-        if not in_range(event_date, start, end):
-            continue
-        if doc.get("event_name") == "purchase":
-            revenue += get_purchase_revenue(doc)
-            txn = get_transaction_id(doc)
-            if txn:
-                transaction_ids.add(txn)
-    return {
-        "next_week_revenue": round(revenue, 2),
-        "next_week_transaction_count": len(transaction_ids),
-    }
+async def _aggregate_purchase_daily(col, start: str, end: str) -> dict[str, dict]:
+    """Return {date: {revenue, transaction_count}} for purchase events in [start, end]."""
+    pipeline = [
+        {"$match": {
+            "event_name": "purchase",
+            "event_date": {"$gte": start, "$lte": end},
+            "ecommerce.purchase_revenue_in_usd": {"$gt": 0},
+        }},
+        PREPROCESS_STAGE,
+        {"$group": {
+            "_id": "$event_date",
+            "revenue": {"$sum": "$revenue"},
+            "transaction_count": {"$sum": 1},
+        }},
+        {"$sort": {"_id": 1}},
+    ]
+    docs = await col.aggregate(pipeline).to_list(length=None)
+    return {d["_id"]: {"revenue": round(d["revenue"], 2), "transaction_count": d["transaction_count"]} for d in docs}
+
+
+def _rollup_to_weeks(
+    daily: dict[str, dict],
+    week_starts: list[str],
+    week_ends: list[str],
+) -> list[dict]:
+    """Roll up daily data into weekly buckets."""
+    weekly = []
+    for w_start, w_end in zip(week_starts, week_ends):
+        revenue = 0.0
+        transaction_count = 0
+        cur = w_start
+        while cur <= w_end:
+            if cur in daily:
+                revenue += daily[cur]["revenue"]
+                transaction_count += daily[cur]["transaction_count"]
+            # advance one day
+            from datetime import datetime, timedelta
+            cur = (datetime.strptime(cur, "%Y%m%d") + timedelta(days=1)).strftime("%Y%m%d")
+        weekly.append({
+            "iso_week": date_to_iso_week(w_start),
+            "agg": {
+                "next_week_revenue": round(revenue, 2),
+                "next_week_transaction_count": transaction_count,
+            },
+        })
+    return weekly
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +88,6 @@ def _aggregate_week(raw_logs: list[dict], start: str, end: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def _linear_least_squares(y: list[float]) -> tuple[float, float]:
-    """Returns (slope, intercept) for x = [0, 1, ..., n-1]."""
     n = len(y)
     if n < 2:
         return 0.0, y[0] if y else 0.0
@@ -79,13 +101,13 @@ def _linear_least_squares(y: list[float]) -> tuple[float, float]:
 
 
 def _residual_std(y: list[float], slope: float, intercept: float) -> float:
+    import math
     n = len(y)
     if n < 2:
         return 0.0
     fitted = [slope * i + intercept for i in range(n)]
     residuals = [yi - fi for yi, fi in zip(y, fitted)]
     variance = sum(r ** 2 for r in residuals) / n
-    import math  # noqa: PLC0415
     return math.sqrt(variance)
 
 
@@ -101,8 +123,7 @@ def _trend_direction(slope: float, y: list[float]) -> str:
     return "increasing" if slope > 0 else "decreasing"
 
 
-def _forecast(target: str, historical: list[dict], lookback: int) -> dict:
-    """Compute prediction for a single target metric."""
+def _forecast(target: str, historical: list[dict]) -> dict:
     values = [h["value"] for h in historical]
     n = len(values)
 
@@ -169,10 +190,6 @@ async def _add_llm_comments(predictions: list[dict], domain: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Agent entry point
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
 # Business-logic validation
 # ---------------------------------------------------------------------------
 
@@ -182,7 +199,7 @@ def _validate(metrics: dict) -> list[str]:
     if predictions and all(p.get("skipped") for p in predictions):
         errors.append(
             "모든 prediction target이 skipped 처리됨 — "
-            "lookback 기간 내 non-zero 데이터가 2주 미만, raw_logs 범위 확인 필요"
+            "lookback 기간 내 non-zero 데이터가 2주 미만, 데이터 범위 확인 필요"
         )
     return errors
 
@@ -204,15 +221,16 @@ async def prediction_agent(state: dict) -> dict:
     async def _run(s: dict) -> tuple[dict, list[str]]:
         week_start: str = s.get("week_start", "")
         week_end: str = s.get("week_end", "")
-        raw_logs: list[dict] = s.get("raw_logs", [])
+        col = get_collection("raw_logs")
 
-        weekly_data: list[dict] = []
-        for i in range(lookback_weeks - 1, -1, -1):
-            w_start = shift_days(week_start, -7 * i)
-            w_end = shift_days(week_end, -7 * i)
-            agg = _aggregate_week(raw_logs, w_start, w_end)
-            iso_week = date_to_iso_week(w_start)
-            weekly_data.append({"iso_week": iso_week, "w_start": w_start, "agg": agg})
+        # Build lookback window bounds
+        lookback_start = shift_days(week_start, -7 * (lookback_weeks - 1))
+        daily = await _aggregate_purchase_daily(col, lookback_start, week_end)
+
+        # Build per-week buckets
+        week_starts = [shift_days(week_start, -7 * i) for i in range(lookback_weeks - 1, -1, -1)]
+        week_ends = [shift_days(week_end, -7 * i) for i in range(lookback_weeks - 1, -1, -1)]
+        weekly_data = _rollup_to_weeks(daily, week_starts, week_ends)
 
         data_quality_warning = None
         actual_weeks = sum(
@@ -220,7 +238,9 @@ async def prediction_agent(state: dict) -> dict:
             if w["agg"]["next_week_revenue"] > 0 or w["agg"]["next_week_transaction_count"] > 0
         )
         if actual_weeks < lookback_weeks:
-            data_quality_warning = f"Only {actual_weeks} weeks of data available (requested {lookback_weeks})"
+            data_quality_warning = (
+                f"Only {actual_weeks} weeks of data available (requested {lookback_weeks})"
+            )
 
         predictions = []
         for target in targets:
@@ -241,7 +261,7 @@ async def prediction_agent(state: dict) -> dict:
                     "skipped": True,
                 })
                 continue
-            predictions.append(_forecast(target, historical, lookback_weeks))
+            predictions.append(_forecast(target, historical))
 
         predictions = await _add_llm_comments(predictions, domain)
 

@@ -387,20 +387,11 @@ class PipelineState(TypedDict, total=False):
     job_id: Annotated[str, _keep]
     period: Annotated[str, _keep]               # "daily" | "weekly" | "monthly"
     domain_description: Annotated[str, _keep]
-    raw_logs: list[dict]                         # raw weekly log records
-    log_ids: list[str]                           # MongoDB IDs of raw log documents
     week_start: Annotated[str, _keep]            # "YYYYMMDD"
     week_end: Annotated[str, _keep]              # "YYYYMMDD"
 
     # ── context_agent output ──────────────────────────────────────────────────
     domain_context: Annotated[dict, _keep]       # DomainContext.model_dump()
-
-    # ── supervisor output ─────────────────────────────────────────────────────
-    sub_agents_plan: list[str]                   # ordered list of sub-agent names to run
-
-    # ── schema_mapping_agent output ───────────────────────────────────────────
-    normalized_logs: list[dict]
-    field_mapping: Annotated[dict, _keep]
 
     # ── sub-agent outputs ─────────────────────────────────────────────────────
     funnel_metrics: Annotated[dict, _keep]
