@@ -17,10 +17,12 @@ import logging
 import math
 from collections import defaultdict
 
+from pydantic import ValidationError
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from app.core.config import get_settings
+from app.core.models import AnomalyMetrics
 from app.agents._ga4_utils import (
     date_to_weekday,
     get_purchase_revenue,
@@ -229,4 +231,10 @@ async def anomaly_agent(state: dict) -> dict:
         len(anomalies),
         affected_metrics,
     )
+
+    try:
+        AnomalyMetrics(**anomaly_metrics)
+    except ValidationError as exc:
+        logger.warning("anomaly_agent: output validation failed — %s", exc)
+
     return {"anomaly_metrics": anomaly_metrics}

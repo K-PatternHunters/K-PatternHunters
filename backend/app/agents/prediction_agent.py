@@ -15,10 +15,13 @@ from __future__ import annotations
 
 import logging
 
+from pydantic import ValidationError
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from app.core.config import get_settings
+from app.core.models import PredictionMetrics
+from app.agents._agent_utils import error_patch, validate_or_retry
 from app.agents._ga4_utils import (
     date_to_iso_week,
     get_purchase_revenue,
@@ -169,13 +172,28 @@ async def _add_llm_comments(predictions: list[dict], domain: str) -> list[dict]:
 # Agent entry point
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Business-logic validation
+# ---------------------------------------------------------------------------
+
+def _validate(metrics: dict) -> list[str]:
+    errors: list[str] = []
+    predictions = metrics.get("predictions", [])
+    if predictions and all(p.get("skipped") for p in predictions):
+        errors.append(
+            "모든 prediction target이 skipped 처리됨 — "
+            "lookback 기간 내 non-zero 데이터가 2주 미만, raw_logs 범위 확인 필요"
+        )
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# Agent entry point
+# ---------------------------------------------------------------------------
+
 async def prediction_agent(state: dict) -> dict:
     """LangGraph node: linear trend forecast for next-week metrics."""
-    week_start: str = state.get("week_start", "")
-    week_end: str = state.get("week_end", "")
-    raw_logs: list[dict] = state.get("raw_logs", [])
     domain_context: dict = state.get("domain_context", {})
-
     pred_cfg: dict = domain_context.get("prediction_config", {})
     targets: list[str] = pred_cfg.get("targets", [
         "next_week_revenue", "next_week_transaction_count"
@@ -183,64 +201,80 @@ async def prediction_agent(state: dict) -> dict:
     lookback_weeks: int = int(pred_cfg.get("lookback_weeks", 4))
     domain: str = domain_context.get("domain", "ecommerce")
 
-    # Collect lookback weekly data (most recent = current week at index lookback_weeks-1)
-    weekly_data: list[dict] = []
-    for i in range(lookback_weeks - 1, -1, -1):
-        w_start = shift_days(week_start, -7 * i)
-        w_end = shift_days(week_end, -7 * i)
-        agg = _aggregate_week(raw_logs, w_start, w_end)
-        iso_week = date_to_iso_week(w_start)
-        weekly_data.append({"iso_week": iso_week, "w_start": w_start, "agg": agg})
+    async def _run(s: dict) -> tuple[dict, list[str]]:
+        week_start: str = s.get("week_start", "")
+        week_end: str = s.get("week_end", "")
+        raw_logs: list[dict] = s.get("raw_logs", [])
 
-    data_quality_warning = None
-    actual_weeks = sum(1 for w in weekly_data if w["agg"]["next_week_revenue"] > 0 or w["agg"]["next_week_transaction_count"] > 0)
-    if actual_weeks < lookback_weeks:
-        data_quality_warning = f"Only {actual_weeks} weeks of data available (requested {lookback_weeks})"
+        weekly_data: list[dict] = []
+        for i in range(lookback_weeks - 1, -1, -1):
+            w_start = shift_days(week_start, -7 * i)
+            w_end = shift_days(week_end, -7 * i)
+            agg = _aggregate_week(raw_logs, w_start, w_end)
+            iso_week = date_to_iso_week(w_start)
+            weekly_data.append({"iso_week": iso_week, "w_start": w_start, "agg": agg})
 
-    predictions = []
-    for target in targets:
-        historical = [
-            {"week": w["iso_week"], "value": w["agg"].get(target, 0.0)}
-            for w in weekly_data
-        ]
-        # Skip target if fewer than 2 weeks have non-zero data
-        non_zero = [h for h in historical if h["value"] > 0]
-        if len(non_zero) < 2:
-            predictions.append({
-                "target": target,
-                "historical": historical,
-                "predicted_value": 0.0,
-                "confidence_interval": {"lower": 0.0, "upper": 0.0},
-                "trend_direction": "stable",
-                "trend_slope": 0.0,
-                "llm_comment": None,
-                "skipped": True,
-            })
-            continue
-        predictions.append(_forecast(target, historical, lookback_weeks))
+        data_quality_warning = None
+        actual_weeks = sum(
+            1 for w in weekly_data
+            if w["agg"]["next_week_revenue"] > 0 or w["agg"]["next_week_transaction_count"] > 0
+        )
+        if actual_weeks < lookback_weeks:
+            data_quality_warning = f"Only {actual_weeks} weeks of data available (requested {lookback_weeks})"
 
-    predictions = await _add_llm_comments(predictions, domain)
+        predictions = []
+        for target in targets:
+            historical = [
+                {"week": w["iso_week"], "value": w["agg"].get(target, 0.0)}
+                for w in weekly_data
+            ]
+            non_zero = [h for h in historical if h["value"] > 0]
+            if len(non_zero) < 2:
+                predictions.append({
+                    "target": target,
+                    "historical": historical,
+                    "predicted_value": 0.0,
+                    "confidence_interval": {"lower": 0.0, "upper": 0.0},
+                    "trend_direction": "stable",
+                    "trend_slope": 0.0,
+                    "llm_comment": None,
+                    "skipped": True,
+                })
+                continue
+            predictions.append(_forecast(target, historical, lookback_weeks))
 
-    # Overall trend
-    trend_directions = [p["trend_direction"] for p in predictions if not p.get("skipped")]
-    if trend_directions:
-        overall = max(set(trend_directions), key=trend_directions.count)
-    else:
-        overall = "stable"
+        predictions = await _add_llm_comments(predictions, domain)
 
-    prediction_metrics = {
-        "method": pred_cfg.get("method", "linear_trend"),
-        "lookback_weeks": lookback_weeks,
-        "predictions": predictions,
-        "summary": {
-            "overall_trend": overall,
-            "data_quality_warning": data_quality_warning,
-        },
-    }
+        trend_directions = [p["trend_direction"] for p in predictions if not p.get("skipped")]
+        overall = max(set(trend_directions), key=trend_directions.count) if trend_directions else "stable"
+
+        metrics = {
+            "method": pred_cfg.get("method", "linear_trend"),
+            "lookback_weeks": lookback_weeks,
+            "predictions": predictions,
+            "summary": {
+                "overall_trend": overall,
+                "data_quality_warning": data_quality_warning,
+            },
+        }
+        return metrics, _validate(metrics)
+
+    prediction_metrics, validation_errors = await validate_or_retry(
+        run_fn=_run,
+        state=state,
+        agent_name="prediction_agent",
+        state_key="prediction_metrics",
+    )
 
     logger.info(
         "prediction_agent: %d targets  overall_trend=%s",
-        len(predictions),
-        overall,
+        len(prediction_metrics.get("predictions", [])),
+        (prediction_metrics.get("summary") or {}).get("overall_trend", "stable"),
     )
-    return {"prediction_metrics": prediction_metrics}
+
+    try:
+        PredictionMetrics(**prediction_metrics)
+    except ValidationError as exc:
+        logger.warning("prediction_agent: schema validation failed — %s", exc)
+
+    return {"prediction_metrics": prediction_metrics, **error_patch("prediction_agent", validation_errors)}

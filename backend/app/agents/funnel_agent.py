@@ -16,7 +16,11 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 
+from pydantic import ValidationError
+
 from app.agents._ga4_utils import get_device_category, get_traffic_source, in_range
+from app.agents._agent_utils import error_patch, validate_or_retry
+from app.core.models import FunnelMetrics
 
 logger = logging.getLogger(__name__)
 
@@ -97,16 +101,31 @@ def _biggest_drop_off(steps: list[str], step_stats: list[dict]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Business-logic validation
+# ---------------------------------------------------------------------------
+
+def _validate(metrics: dict) -> list[str]:
+    errors: list[str] = []
+    steps = metrics.get("steps", [])
+    if not steps:
+        errors.append("steps 리스트가 비어 있음 — week_start/week_end 범위에 해당 이벤트가 없음")
+        return errors
+    first_count = steps[0].get("user_count", 0)
+    if first_count == 0:
+        errors.append(
+            f"첫 단계({steps[0].get('event_name', '?')}) user_count == 0 "
+            "— 데이터 범위 또는 event_name 불일치 확인 필요"
+        )
+    return errors
+
+
+# ---------------------------------------------------------------------------
 # Agent entry point
 # ---------------------------------------------------------------------------
 
 async def funnel_agent(state: dict) -> dict:
     """LangGraph node: compute funnel conversion and drop-off rates."""
-    week_start: str = state.get("week_start", "")
-    week_end: str = state.get("week_end", "")
-    raw_logs: list[dict] = state.get("raw_logs", [])
     domain_context: dict = state.get("domain_context", {})
-
     funnel_cfg: dict = domain_context.get("funnel_config", {})
     steps: list[str] = funnel_cfg.get("steps", [
         "session_start", "view_item", "add_to_cart", "begin_checkout", "purchase"
@@ -115,37 +134,56 @@ async def funnel_agent(state: dict) -> dict:
         "breakdowns", ["traffic_source", "device_category"]
     )
 
-    agg = _aggregate_funnel(raw_logs, week_start, week_end, steps, breakdowns)
-    step_users = agg["step_users"]
-    breakdown_users = agg["breakdown_users"]
+    async def _run(s: dict) -> tuple[dict, list[str]]:
+        week_start: str = s.get("week_start", "")
+        week_end: str = s.get("week_end", "")
+        raw_logs: list[dict] = s.get("raw_logs", [])
 
-    step_stats = _build_step_stats(steps, step_users)
-    first_count = step_stats[0]["user_count"] if step_stats else 0
-    last_count = step_stats[-1]["user_count"] if step_stats else 0
-    overall_cvr = round(last_count / first_count, 4) if first_count > 0 else 0.0
+        agg = _aggregate_funnel(raw_logs, week_start, week_end, steps, breakdowns)
+        step_users = agg["step_users"]
+        breakdown_users = agg["breakdown_users"]
 
-    breakdowns_result: dict[str, dict] = {}
-    for bd in breakdowns:
-        breakdowns_result[bd] = {}
-        for dim_val, dim_step_users in breakdown_users[bd].items():
-            bd_stats = _build_step_stats(steps, dim_step_users)
-            bd_first = bd_stats[0]["user_count"] if bd_stats else 0
-            bd_last = bd_stats[-1]["user_count"] if bd_stats else 0
-            breakdowns_result[bd][dim_val] = {
-                "overall_conversion_rate": round(bd_last / bd_first, 4) if bd_first > 0 else 0.0,
-                "steps": bd_stats,
-            }
+        step_stats = _build_step_stats(steps, step_users)
+        first_count = step_stats[0]["user_count"] if step_stats else 0
+        last_count = step_stats[-1]["user_count"] if step_stats else 0
+        overall_cvr = round(last_count / first_count, 4) if first_count > 0 else 0.0
 
-    funnel_metrics = {
-        "steps": step_stats,
-        "overall_conversion_rate": overall_cvr,
-        "biggest_drop_off_step": _biggest_drop_off(steps, step_stats),
-        "breakdowns": breakdowns_result,
-    }
+        breakdowns_result: dict[str, dict] = {}
+        for bd in breakdowns:
+            breakdowns_result[bd] = {}
+            for dim_val, dim_step_users in breakdown_users[bd].items():
+                bd_stats = _build_step_stats(steps, dim_step_users)
+                bd_first = bd_stats[0]["user_count"] if bd_stats else 0
+                bd_last = bd_stats[-1]["user_count"] if bd_stats else 0
+                breakdowns_result[bd][dim_val] = {
+                    "overall_conversion_rate": round(bd_last / bd_first, 4) if bd_first > 0 else 0.0,
+                    "steps": bd_stats,
+                }
+
+        metrics = {
+            "steps": step_stats,
+            "overall_conversion_rate": overall_cvr,
+            "biggest_drop_off_step": _biggest_drop_off(steps, step_stats),
+            "breakdowns": breakdowns_result,
+        }
+        return metrics, _validate(metrics)
+
+    funnel_metrics, validation_errors = await validate_or_retry(
+        run_fn=_run,
+        state=state,
+        agent_name="funnel_agent",
+        state_key="funnel_metrics",
+    )
 
     logger.info(
         "funnel_agent: overall_cvr=%.4f  biggest_drop_off=%s",
-        overall_cvr,
-        funnel_metrics["biggest_drop_off_step"],
+        funnel_metrics.get("overall_conversion_rate", 0),
+        funnel_metrics.get("biggest_drop_off_step", ""),
     )
-    return {"funnel_metrics": funnel_metrics}
+
+    try:
+        FunnelMetrics(**funnel_metrics)
+    except ValidationError as exc:
+        logger.warning("funnel_agent: schema validation failed — %s", exc)
+
+    return {"funnel_metrics": funnel_metrics, **error_patch("funnel_agent", validation_errors)}

@@ -16,7 +16,11 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 
+from pydantic import ValidationError
+
 from app.agents._ga4_utils import date_to_iso_week, get_purchase_revenue, week_offset
+from app.agents._agent_utils import error_patch, validate_or_retry
+from app.core.models import CohortMetrics
 
 logger = logging.getLogger(__name__)
 
@@ -170,30 +174,58 @@ def _build_summary(cohorts: list[dict]) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Business-logic validation
+# ---------------------------------------------------------------------------
+
+def _validate(metrics: dict) -> list[str]:
+    errors: list[str] = []
+    cohorts = metrics.get("cohorts", [])
+    if not cohorts:
+        errors.append(
+            "cohorts 리스트가 비어 있음 — 해당 기간에 purchase 이벤트가 없거나 "
+            "user_pseudo_id 매핑 실패"
+        )
+    return errors
+
+
+# ---------------------------------------------------------------------------
 # Agent entry point
 # ---------------------------------------------------------------------------
 
 async def cohort_agent(state: dict) -> dict:
     """LangGraph node: first-purchase cohort retention and revenue analysis."""
-    raw_logs: list[dict] = state.get("raw_logs", [])
     domain_context: dict = state.get("domain_context", {})
-
     cohort_cfg: dict = domain_context.get("cohort_config", {})
     cohort_definition = cohort_cfg.get("cohort_basis", "first_purchase_week")
 
-    cohort_data = _build_cohort_data(raw_logs)
-    cohorts = _build_cohorts(cohort_data)
-    summary = _build_summary(cohorts)
+    async def _run(s: dict) -> tuple[dict, list[str]]:
+        raw_logs: list[dict] = s.get("raw_logs", [])
+        cohort_data = _build_cohort_data(raw_logs)
+        cohorts = _build_cohorts(cohort_data)
+        summary = _build_summary(cohorts)
+        metrics = {
+            "cohort_definition": cohort_definition,
+            "cohorts": cohorts,
+            "summary": summary,
+        }
+        return metrics, _validate(metrics)
 
-    cohort_metrics = {
-        "cohort_definition": cohort_definition,
-        "cohorts": cohorts,
-        "summary": summary,
-    }
+    cohort_metrics, validation_errors = await validate_or_retry(
+        run_fn=_run,
+        state=state,
+        agent_name="cohort_agent",
+        state_key="cohort_metrics",
+    )
 
     logger.info(
         "cohort_agent: %d cohorts built  avg_week1_retention=%.4f",
-        len(cohorts),
-        summary["avg_week1_retention"],
+        len(cohort_metrics.get("cohorts", [])),
+        (cohort_metrics.get("summary") or {}).get("avg_week1_retention", 0),
     )
-    return {"cohort_metrics": cohort_metrics}
+
+    try:
+        CohortMetrics(**cohort_metrics)
+    except ValidationError as exc:
+        logger.warning("cohort_agent: schema validation failed — %s", exc)
+
+    return {"cohort_metrics": cohort_metrics, **error_patch("cohort_agent", validation_errors)}
