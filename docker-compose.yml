@@ -1,9 +1,13 @@
-version: "3.9"
-
-# Defines all services for the customer-behavior-agent monorepo.
-# Run with: docker compose up --build
+# docker-compose.yaml
+# Run:  docker compose up -d --build
+# Ingest: docker compose run --rm ingest python export_bq.py
+#         docker compose run --rm ingest python ingest_local.py
 
 services:
+
+  # ──────────────────────────────────────────
+  # Frontend (Vue.js)
+  # ──────────────────────────────────────────
   frontend:
     build:
       context: ./frontend
@@ -20,6 +24,9 @@ services:
     networks:
       - app-network
 
+  # ──────────────────────────────────────────
+  # Backend (FastAPI)
+  # ──────────────────────────────────────────
   backend:
     build:
       context: ./backend
@@ -29,25 +36,61 @@ services:
     env_file:
       - .env
     depends_on:
-      - mongodb
-      - qdrant
-      - redis
+      mongodb:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      redis:
+        condition: service_started
     volumes:
       - ./backend:/app
     networks:
       - app-network
 
+  # ──────────────────────────────────────────
+  # MongoDB (GA4 로그 저장소)
+  # ──────────────────────────────────────────
   mongodb:
     image: mongo:7.0
+    container_name: mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGO_DB}
     ports:
       - "27017:27017"
-    environment:
-      MONGO_INITDB_DATABASE: customer_behavior
     volumes:
       - mongo_data:/data/db
     networks:
       - app-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
+  # MongoDB 웹 UI (개발용)
+  mongo-express:
+    image: mongo-express:1.0.2
+    container_name: mongo-express
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: ${MONGO_USER}
+      ME_CONFIG_MONGODB_ADMINPASSWORD: ${MONGO_PASSWORD}
+      ME_CONFIG_MONGODB_URL: mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongodb:27017/
+      ME_CONFIG_BASICAUTH: "false"
+    ports:
+      - "8081:8081"
+    networks:
+      - app-network
+
+  # ──────────────────────────────────────────
+  # Qdrant (벡터 DB)
+  # ──────────────────────────────────────────
   qdrant:
     image: qdrant/qdrant:latest
     ports:
@@ -58,6 +101,9 @@ services:
     networks:
       - app-network
 
+  # ──────────────────────────────────────────
+  # Redis (작업 상태 폴링)
+  # ──────────────────────────────────────────
   redis:
     image: redis:7.2-alpine
     ports:
@@ -66,6 +112,40 @@ services:
       - redis_data:/data
     networks:
       - app-network
+
+  # ──────────────────────────────────────────
+  # BigQuery → MongoDB 적재 (1회성 Job)
+  # docker compose run --rm ingest python export_bq.py
+  # docker compose run --rm ingest python ingest_local.py
+  # ──────────────────────────────────────────
+  ingest:
+    build:
+      context: ./ingest
+      dockerfile: Dockerfile
+    container_name: bq-ingest
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      MONGO_URI: mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongodb:27017/
+      MONGO_DB: ${MONGO_DB}
+      MONGO_COLLECTION: ${MONGO_COLLECTION}
+      BQ_PROJECT_ID: ${BQ_PROJECT_ID}
+      BQ_DATASET: ${BQ_DATASET}
+      BQ_DATE_START: ${BQ_DATE_START}
+      BQ_DATE_END: ${BQ_DATE_END}
+      BQ_BATCH_SIZE: ${BQ_BATCH_SIZE}
+      BQ_CHUNK_DAYS: ${BQ_CHUNK_DAYS}
+      INGEST_WORKERS: ${INGEST_WORKERS}
+      DATA_DIR: /data
+      GOOGLE_APPLICATION_CREDENTIALS: /secrets/sa-key.json
+    volumes:
+      - ${SA_KEY_PATH}:/secrets/sa-key.json:ro
+      - ./data:/data
+    networks:
+      - app-network
+    profiles:
+      - ingest   # docker compose up 시 자동 실행 안 됨
 
 volumes:
   mongo_data:
