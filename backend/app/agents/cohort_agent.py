@@ -1,11 +1,9 @@
 """Cohort Analysis Agent — first-purchase cohort retention and revenue tracking.
 
 Input  (PipelineState keys consumed):
-    week_start     : str        — "YYYYMMDD"
-    week_end       : str        — "YYYYMMDD"
-    field_mapping  : dict       — from schema_mapping_agent
-    raw_logs       : list[dict] — weekly raw log records
-    domain_context : dict       — DomainContext.model_dump()
+    week_start     : str  — "YYYYMMDD"  (used only for domain_context; cohort uses full history)
+    week_end       : str  — "YYYYMMDD"
+    domain_context : dict — DomainContext.model_dump()
 
 Output (PipelineState keys produced):
     cohort_metrics : dict
@@ -18,58 +16,40 @@ from collections import defaultdict
 
 from pydantic import ValidationError
 
-from app.agents._ga4_utils import date_to_iso_week, get_purchase_revenue, week_offset
+from app.agents._ga4_utils import PREPROCESS_STAGE, date_to_iso_week, week_offset
 from app.agents._agent_utils import error_patch, validate_or_retry
 from app.core.models import CohortMetrics
+from app.db.mongo import get_collection
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Core aggregation
+# Cohort computation (pure Python — runs on aggregation results)
 # ---------------------------------------------------------------------------
 
-def _build_cohort_data(raw_logs: list[dict]) -> dict:
+def _build_cohorts(purchase_docs: list[dict]) -> list[dict]:
     """
-    Returns:
-        first_purchase_week[user] : str (ISO week of user's first purchase)
-        purchases[user][iso_week] : float (total revenue that week)
+    purchase_docs: [{"user_pseudo_id": str, "first_purchase_date": str, "purchases": [{"date": str, "revenue": float}]}]
     """
-    purchase_events: dict[str, list[tuple[str, float]]] = defaultdict(list)
-
-    for doc in raw_logs:
-        if doc.get("event_name") != "purchase":
-            continue
-        uid = doc.get("user_pseudo_id", "")
-        if not uid:
-            continue
-        event_date = doc.get("event_date", "")
-        revenue = get_purchase_revenue(doc)
-        purchase_events[uid].append((event_date, revenue))
-
     first_purchase_week: dict[str, str] = {}
     purchases: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
 
-    for uid, events in purchase_events.items():
-        earliest_date = min(e[0] for e in events)
-        first_purchase_week[uid] = date_to_iso_week(earliest_date)
-        for date, revenue in events:
-            iso_week = date_to_iso_week(date)
-            purchases[uid][iso_week] += revenue
-
-    return {"first_purchase_week": first_purchase_week, "purchases": purchases}
-
-
-def _build_cohorts(cohort_data: dict) -> list[dict]:
-    first_purchase_week = cohort_data["first_purchase_week"]
-    purchases = cohort_data["purchases"]
+    for doc in purchase_docs:
+        uid = doc.get("user_pseudo_id") or doc.get("_id", "")
+        first_date = doc.get("first_purchase_date", "")
+        if not uid or not first_date:
+            continue
+        first_purchase_week[uid] = date_to_iso_week(first_date)
+        for p in doc.get("purchases", []):
+            iso_week = date_to_iso_week(p["date"])
+            purchases[uid][iso_week] += p.get("revenue", 0.0)
 
     # Group users by cohort week
     cohort_users: dict[str, list[str]] = defaultdict(list)
     for uid, week in first_purchase_week.items():
         cohort_users[week].append(uid)
 
-    # Collect all ISO weeks that appear in the data
     all_weeks: set[str] = set()
     for uid_weeks in purchases.values():
         all_weeks.update(uid_weeks.keys())
@@ -78,9 +58,9 @@ def _build_cohorts(cohort_data: dict) -> list[dict]:
     for cohort_week in sorted(cohort_users.keys()):
         users = cohort_users[cohort_week]
         cohort_size = len(users)
-        # Determine which weeks are >= cohort_week, sorted by numeric offset (not string)
         relevant_weeks = sorted(
-            (w for w in all_weeks if week_offset(cohort_week, w) is not None and week_offset(cohort_week, w) >= 0),
+            (w for w in all_weeks
+             if week_offset(cohort_week, w) is not None and week_offset(cohort_week, w) >= 0),
             key=lambda w: week_offset(cohort_week, w),
         )
 
@@ -119,7 +99,6 @@ def _build_summary(cohorts: list[dict]) -> dict:
             "new_buyer_trend": "stable",
         }
 
-    # avg week1 retention
     week1_retentions = [
         w["retention_rate"]
         for c in cohorts
@@ -128,7 +107,6 @@ def _build_summary(cohorts: list[dict]) -> dict:
     ]
     avg_week1 = round(sum(week1_retentions) / len(week1_retentions), 4) if week1_retentions else 0.0
 
-    # best retention cohort (by week1 retention)
     best_cohort = None
     best_ret = -1.0
     for c in cohorts:
@@ -137,7 +115,6 @@ def _build_summary(cohorts: list[dict]) -> dict:
                 best_ret = w["retention_rate"]
                 best_cohort = c["cohort_week"]
 
-    # typical churn week: offset with highest avg drop
     offset_drop: dict[int, list[float]] = defaultdict(list)
     for c in cohorts:
         prev_ret = 1.0
@@ -154,7 +131,6 @@ def _build_summary(cohorts: list[dict]) -> dict:
         avg_drops = {k: sum(v) / len(v) for k, v in offset_drop.items()}
         typical_churn_week = max(avg_drops, key=lambda k: avg_drops[k])
 
-    # new buyer trend: compare first half vs second half cohort sizes
     sizes = [c["cohort_size"] for c in cohorts]
     mid = len(sizes) // 2
     if mid > 0:
@@ -199,9 +175,31 @@ async def cohort_agent(state: dict) -> dict:
     cohort_definition = cohort_cfg.get("cohort_basis", "first_purchase_week")
 
     async def _run(s: dict) -> tuple[dict, list[str]]:
-        raw_logs: list[dict] = s.get("raw_logs", [])
-        cohort_data = _build_cohort_data(raw_logs)
-        cohorts = _build_cohorts(cohort_data)
+        col = get_collection("raw_logs")
+
+        # Fetch all purchase history — no date filter (cohort needs full history)
+        pipeline = [
+            {"$match": {
+                "event_name": "purchase",
+                "ecommerce.purchase_revenue_in_usd": {"$gt": 0},
+            }},
+            PREPROCESS_STAGE,
+            {"$group": {
+                "_id": "$user_pseudo_id",
+                "first_purchase_date": {"$min": "$event_date"},
+                "purchases": {"$push": {
+                    "date": "$event_date",
+                    "revenue": "$revenue",
+                }},
+            }},
+        ]
+        purchase_docs = await col.aggregate(pipeline).to_list(length=None)
+
+        # Normalise _id → user_pseudo_id for downstream
+        for doc in purchase_docs:
+            doc["user_pseudo_id"] = doc.pop("_id", "")
+
+        cohorts = _build_cohorts(purchase_docs)
         summary = _build_summary(cohorts)
         metrics = {
             "cohort_definition": cohort_definition,

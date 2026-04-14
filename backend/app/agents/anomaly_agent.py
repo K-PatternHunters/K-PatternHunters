@@ -1,11 +1,9 @@
 """Anomaly Detection Agent — Z-score based detection + LLM interpretation.
 
 Input  (PipelineState keys consumed):
-    week_start     : str        — "YYYYMMDD"
-    week_end       : str        — "YYYYMMDD"
-    field_mapping  : dict       — from schema_mapping_agent
-    raw_logs       : list[dict] — weekly raw log records (includes lookback weeks)
-    domain_context : dict       — DomainContext.model_dump()
+    week_start     : str  — "YYYYMMDD"
+    week_end       : str  — "YYYYMMDD"
+    domain_context : dict — DomainContext.model_dump()
 
 Output (PipelineState keys produced):
     anomaly_metrics : dict
@@ -15,7 +13,6 @@ from __future__ import annotations
 
 import logging
 import math
-from collections import defaultdict
 
 from pydantic import ValidationError
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -23,14 +20,8 @@ from langchain_openai import ChatOpenAI
 
 from app.core.config import get_settings
 from app.core.models import AnomalyMetrics
-from app.agents._ga4_utils import (
-    date_to_weekday,
-    get_purchase_revenue,
-    get_session_id,
-    get_transaction_id,
-    in_range,
-    shift_days,
-)
+from app.agents._ga4_utils import PREPROCESS_STAGE, date_to_weekday, shift_days
+from app.db.mongo import get_collection
 
 logger = logging.getLogger(__name__)
 
@@ -44,35 +35,44 @@ Be concise and actionable. Focus on possible causes, not just the numbers."""
 
 
 # ---------------------------------------------------------------------------
-# Daily metric aggregation
+# MongoDB aggregation — daily metrics
 # ---------------------------------------------------------------------------
 
-def _aggregate_daily(raw_logs: list[dict], start: str, end: str) -> dict[str, dict]:
+async def _aggregate_daily(col, start: str, end: str) -> dict[str, dict]:
     """Return {date: {daily_revenue, daily_session_count, daily_conversion_rate}}."""
-    daily_revenue: dict[str, float] = defaultdict(float)
-    daily_sessions: dict[str, set] = defaultdict(set)
-    daily_transactions: dict[str, set] = defaultdict(set)
+    pipeline = [
+        {"$match": {"event_date": {"$gte": start, "$lte": end}}},
+        PREPROCESS_STAGE,
+        {"$group": {
+            "_id": "$event_date",
+            "sessions": {"$addToSet": {"u": "$user_pseudo_id", "s": "$ga_session_id"}},
+            "revenue": {"$sum": "$revenue"},
+            "transactions": {"$addToSet": "$transaction_id_clean"},
+        }},
+        {"$project": {
+            "date": "$_id",
+            "_id": 0,
+            "session_count": {"$size": "$sessions"},
+            "revenue": 1,
+            "transaction_count": {
+                "$size": {
+                    "$filter": {
+                        "input": "$transactions",
+                        "cond": {"$ne": ["$$this", None]},
+                    }
+                }
+            },
+        }},
+        {"$sort": {"date": 1}},
+    ]
+    docs = await col.aggregate(pipeline).to_list(length=None)
 
-    for doc in raw_logs:
-        event_date = doc.get("event_date", "")
-        if not in_range(event_date, start, end):
-            continue
-        sid = get_session_id(doc)
-        if sid:
-            daily_sessions[event_date].add(sid)
-        if doc.get("event_name") == "purchase":
-            daily_revenue[event_date] += get_purchase_revenue(doc)
-            txn = get_transaction_id(doc)
-            if txn:
-                daily_transactions[event_date].add(txn)
-
-    all_dates = set(daily_sessions) | set(daily_revenue)
     result: dict[str, dict] = {}
-    for d in all_dates:
-        sc = len(daily_sessions[d])
-        tc = len(daily_transactions[d])
-        result[d] = {
-            "daily_revenue": round(daily_revenue[d], 2),
+    for d in docs:
+        sc = d.get("session_count", 0)
+        tc = d.get("transaction_count", 0)
+        result[d["date"]] = {
+            "daily_revenue": round(d.get("revenue", 0.0), 2),
             "daily_session_count": sc,
             "daily_conversion_rate": round(tc / sc, 6) if sc > 0 else 0.0,
         }
@@ -129,7 +129,7 @@ def _detect_anomalies(
                     "expected_std": round(std, 6),
                     "z_score": round(z, 4),
                     "direction": "high" if z > 0 else "low",
-                    "llm_interpretation": None,  # filled later
+                    "llm_interpretation": None,
                 })
 
         clean.append({"metric": metric, "max_z_score": round(metric_max_z, 4), "status": "normal"})
@@ -178,7 +178,6 @@ async def anomaly_agent(state: dict) -> dict:
     """LangGraph node: Z-score anomaly detection + LLM interpretation."""
     week_start: str = state.get("week_start", "")
     week_end: str = state.get("week_end", "")
-    raw_logs: list[dict] = state.get("raw_logs", [])
     domain_context: dict = state.get("domain_context", {})
 
     anomaly_cfg: dict = domain_context.get("anomaly_config", {})
@@ -188,12 +187,12 @@ async def anomaly_agent(state: dict) -> dict:
     threshold: float = float(anomaly_cfg.get("threshold", 2.0))
     domain: str = domain_context.get("domain", "ecommerce")
 
-    # Baseline: lookback _LOOKBACK_WEEKS weeks before current week
     baseline_start = shift_days(week_start, -7 * _LOOKBACK_WEEKS)
     baseline_end = shift_days(week_start, -1)
 
-    current_daily = _aggregate_daily(raw_logs, week_start, week_end)
-    baseline_daily = _aggregate_daily(raw_logs, baseline_start, baseline_end)
+    col = get_collection("raw_logs")
+    current_daily = await _aggregate_daily(col, week_start, week_end)
+    baseline_daily = await _aggregate_daily(col, baseline_start, baseline_end)
 
     if len(baseline_daily) < _MIN_BASELINE_DAYS:
         logger.warning(
@@ -204,7 +203,6 @@ async def anomaly_agent(state: dict) -> dict:
 
     anomalies, clean_metrics = _detect_anomalies(current_daily, baseline_daily, target_metrics, threshold)
 
-    # LLM interpretation only when anomalies exist
     if anomalies:
         anomalies = await _interpret_anomalies(anomalies, domain)
 
