@@ -1,16 +1,26 @@
 """Entry point for the FastAPI application — registers routers and starts the app."""
 
-# TODO: add lifespan handler to initialise MongoDB and Qdrant connections on startup
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.db import mongo
 from app.routers import analysis, status
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await mongo.connect()
+    yield
+    await mongo.disconnect()
+
 
 app = FastAPI(
     title="Customer Behavior Agent API",
     description="AI-powered e-commerce behavior analysis pipeline",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # TODO: tighten origins to the actual frontend URL in production
@@ -28,5 +38,4 @@ app.include_router(status.router, prefix="/analysis", tags=["status"])
 
 @app.get("/health")
 async def health_check():
-    # TODO: include db connectivity checks
     return {"status": "ok"}
