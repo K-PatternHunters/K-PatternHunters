@@ -1,7 +1,7 @@
 # docker-compose.yaml
 # Run:  docker compose up -d --build
-# Ingest: docker compose run --rm ingest python export_bq.py
-#         docker compose run --rm ingest python ingest_local.py
+# Google 에서 가져오기: docker compose run --rm ingest python export_bq.py
+# Ingest: docker compose run --rm ingest python ingest_local.py
 
 services:
 
@@ -35,6 +35,9 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      # Override host to the Docker service name (env_file sets localhost by default)
+      MONGO_HOST: mongodb
     depends_on:
       mongodb:
         condition: service_healthy
@@ -65,7 +68,19 @@ services:
     networks:
       - app-network
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      test:
+        [
+          "CMD",
+          "mongosh",
+          "--username",
+          "${MONGO_USER}",
+          "--password",
+          "${MONGO_PASSWORD}",
+          "--authenticationDatabase",
+          "admin",
+          "--eval",
+          "db.adminCommand('ping')",
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -81,7 +96,7 @@ services:
     environment:
       ME_CONFIG_MONGODB_ADMINUSERNAME: ${MONGO_USER}
       ME_CONFIG_MONGODB_ADMINPASSWORD: ${MONGO_PASSWORD}
-      ME_CONFIG_MONGODB_URL: mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongodb:27017/
+      ME_CONFIG_MONGODB_URL: mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongodb:27017/?authSource=admin
       ME_CONFIG_BASICAUTH: "false"
     ports:
       - "8081:8081"
@@ -120,14 +135,14 @@ services:
   # ──────────────────────────────────────────
   ingest:
     build:
-      context: ./ingest
+      context: ./data/ingest
       dockerfile: Dockerfile
     container_name: bq-ingest
     depends_on:
       mongodb:
         condition: service_healthy
     environment:
-      MONGO_URI: mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongodb:27017/
+      MONGO_URI: mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongodb:27017/?authSource=admin
       MONGO_DB: ${MONGO_DB}
       MONGO_COLLECTION: ${MONGO_COLLECTION}
       BQ_PROJECT_ID: ${BQ_PROJECT_ID}
@@ -137,7 +152,7 @@ services:
       BQ_BATCH_SIZE: ${BQ_BATCH_SIZE}
       BQ_CHUNK_DAYS: ${BQ_CHUNK_DAYS}
       INGEST_WORKERS: ${INGEST_WORKERS}
-      DATA_DIR: /data
+      DATA_DIR: /data/ecom-data
       GOOGLE_APPLICATION_CREDENTIALS: /secrets/sa-key.json
     volumes:
       - ${SA_KEY_PATH}:/secrets/sa-key.json:ro
