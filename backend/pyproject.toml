@@ -1,0 +1,6 @@
+[tool.ruff]
+exclude = [
+    "app/agents/ppt_agent.py",
+    "app/agents/insight_agent.py",
+    "app/agents/context_agent.py",
+]

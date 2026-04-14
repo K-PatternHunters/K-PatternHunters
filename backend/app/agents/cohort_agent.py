@@ -74,8 +74,6 @@ def _build_cohorts(cohort_data: dict) -> list[dict]:
     for cohort_week in sorted(cohort_users.keys()):
         users = cohort_users[cohort_week]
         cohort_size = len(users)
-        user_set = set(users)
-
         # Determine which weeks are >= cohort_week, sorted by numeric offset (not string)
         relevant_weeks = sorted(
             (w for w in all_weeks if week_offset(cohort_week, w) is not None and week_offset(cohort_week, w) >= 0),
