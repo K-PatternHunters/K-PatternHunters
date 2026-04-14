@@ -1,4 +1,4 @@
-"""Loads and validates all environment variables using Pydantic BaseSettings."""
+"""Loads and validates environment variables using pydantic-settings."""
 
 from functools import lru_cache
 
@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     QDRANT_URL: str = "http://localhost:6333"
     REDIS_URL: str = "redis://localhost:6379/0"
     APP_ENV: str = "development"
-    SECRET_KEY: str = ""
+    SECRET_KEY: str = "dev-secret"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
