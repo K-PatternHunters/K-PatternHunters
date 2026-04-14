@@ -22,7 +22,8 @@ env/
 htmlcov/
 .coverage
 coverage.xml
-
+tests/
+pytest.ini
 # ─── Node / Vue ────────────────────────────────
 node_modules/
 dist/
