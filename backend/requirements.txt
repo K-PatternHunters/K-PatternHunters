@@ -11,6 +11,7 @@ openai
 
 # Database
 pymongo
+motor
 qdrant-client
 
 # PPT generation
@@ -22,8 +23,6 @@ redis
 
 # Config / utilities
 python-dotenv
-
-# Config
 pydantic-settings
 
 # Code quality (dev)
