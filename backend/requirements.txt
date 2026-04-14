@@ -33,3 +33,7 @@ tqdm==4.66.4
 # Code quality (dev)
 ruff
 black
+
+# Testing (dev)
+pytest
+pytest-asyncio
