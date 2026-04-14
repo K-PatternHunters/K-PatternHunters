@@ -163,7 +163,6 @@ def _print_result(name: str, result: dict) -> None:
 
 
 async def main() -> None:
-    from app.agents.supervisor import supervisor
     from app.agents.schema_mapping_agent import schema_mapping_agent
     from app.agents.funnel_agent import funnel_agent
     from app.agents.cohort_agent import cohort_agent
@@ -178,12 +177,7 @@ async def main() -> None:
     print(f"  raw_logs: {len(state['raw_logs'])} docs  |  SKIP_LLM={SKIP_LLM}")
     print(f"{'#'*60}")
 
-    # 1. supervisor
-    result = await supervisor(state)
-    state.update(result)
-    _print_result("supervisor", result)
-
-    # 2. schema_mapping
+    # 1. schema_mapping
     if SKIP_LLM:
         print("\n[schema_mapping_agent] SKIP_LLM=True → standard mapping only")
         from app.agents.schema_mapping_agent import _STANDARD_GA4_MAPPING

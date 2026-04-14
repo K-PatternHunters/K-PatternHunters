@@ -17,7 +17,7 @@ GA4 ecommerce 행동 데이터를 weekly로 분석하여 자동으로 PPT 보고
 | **jy팀** | `backend_jy` | supervisor, schema_mapping, funnel, cohort, journey, performance, anomaly, prediction, _ga4_utils |
 | **front팀** | `front` | Vue 3 프론트엔드 |
 
-> **주의**: `ppt_agent.py`는 아직 미구현 상태 (placeholder).
+> **주의**: `ppt_agent.py`는 구현 완료 (2026-04-14). `pipeline.py`가 미완료.
 
 ---
 
@@ -72,20 +72,20 @@ schema_mapping_agent ← jy팀 구현. GA4 필드 → 정규화 필드명 매핑
 | 파일 | 상태 | 비고 |
 |---|---|---|
 | `app/agents/_ga4_utils.py` | ✅ 완료 | 공용 GA4 파싱 유틸 (전 agent import) |
-| `app/agents/supervisor.py` | ✅ 완료 | deterministic, LLM 없음 |
 | `app/agents/schema_mapping_agent.py` | ✅ 완료 | GA4 baseline + LLM (불일치 시만) |
-| `app/agents/funnel_agent.py` | ✅ 완료 | 유저 단위 집계, breakdown |
-| `app/agents/cohort_agent.py` | ✅ 완료 | first_purchase_week 코호트, retention/revenue |
-| `app/agents/journey_agent.py` | ✅ 완료 | 세션 시퀀스, top-N 경로, transition matrix |
-| `app/agents/performance_agent.py` | ✅ 완료 | 주간 KPI + daily/source/device/category + WoW |
-| `app/agents/anomaly_agent.py` | ✅ 완료 | Z-score + LLM 한국어 해석 |
-| `app/agents/prediction_agent.py` | ✅ 완료 | linear least-squares + LLM 한국어 코멘트 |
+| `app/agents/_agent_utils.py` | ✅ 완료 | retry loop 공통 유틸 (`validate_or_retry`, `error_patch`) |
+| `app/agents/funnel_agent.py` | ✅ 완료 | 유저 단위 집계, breakdown + 비즈니스 검증 + retry |
+| `app/agents/cohort_agent.py` | ✅ 완료 | first_purchase_week 코호트, retention/revenue + 비즈니스 검증 + retry |
+| `app/agents/journey_agent.py` | ✅ 완료 | 세션 시퀀스, top-N 경로, transition matrix + 비즈니스 검증 + retry |
+| `app/agents/performance_agent.py` | ✅ 완료 | 주간 KPI + daily/source/device/category + WoW + 비즈니스 검증 + retry |
+| `app/agents/anomaly_agent.py` | ✅ 완료 | Z-score + LLM 한국어 해석 (검증 제외 — 내부 baseline 경고 처리로 충분) |
+| `app/agents/prediction_agent.py` | ✅ 완료 | linear least-squares + LLM 한국어 코멘트 + 비즈니스 검증 + retry |
+| `app/agents/ppt_agent.py` | ✅ 완료 | 8슬라이드 고정 구조, python-pptx, 도메인 가변 Slide 6 |
 
 ### 미완료
 
 | 파일 | 상태 | 비고 |
 |---|---|---|
-| `app/agents/ppt_agent.py` | ❌ placeholder | python-pptx 구현 필요 |
 | `app/graph/pipeline.py` | ❌ placeholder | LangGraph StateGraph 정의 필요 |
 | `app/db/mongo.py` | ❌ placeholder | motor AsyncIOMotorClient 연결 필요 |
 | `app/tools/rag_tool.py` | ❌ placeholder | Qdrant RAG 구현 필요 (현재 빈 리스트 반환) |
@@ -346,6 +346,7 @@ K-PatternHunters/
         │   │   ├── context_agent.md
         │   │   └── insight_agent.md
         │   ├── _ga4_utils.py        ← GA4 파싱 유틸 (모든 agent import)
+        │   ├── _agent_utils.py      ← retry loop 공통 유틸 (validate_or_retry, error_patch)
         │   ├── context_agent.py     ← epk4429
         │   ├── insight_agent.py     ← epk4429
         │   ├── supervisor.py        ← jy팀
@@ -356,7 +357,7 @@ K-PatternHunters/
         │   ├── performance_agent.py ← jy팀
         │   ├── anomaly_agent.py     ← jy팀
         │   ├── prediction_agent.py  ← jy팀
-        │   └── ppt_agent.py         ← 미구현
+        │   └── ppt_agent.py         ← jy팀 구현 완료 (8슬라이드)
         ├── core/
         │   ├── config.py            ← pydantic-settings, lru_cache
         │   └── models.py            ← 전체 Pydantic 모델 정의
@@ -375,10 +376,68 @@ K-PatternHunters/
 
 ---
 
+## Agent Output Validation 체계
+
+### 두 단계 검증
+
+각 분석 agent(funnel/cohort/journey/performance/prediction)는 두 단계 검증을 거침:
+
+1. **비즈니스 로직 검증** (retry 대상) — 결과가 의미 있는지 판단
+2. **스키마 검증** (Pydantic, 로그만) — 결과 구조/타입이 맞는지 확인
+
+### Retry 동작 (`_agent_utils.py`)
+
+```
+attempt 1 → _run(state) → errors? → WARNING 로그 → retry
+attempt 2 → _run(state) → errors? → WARNING 로그 → retry
+attempt 3 → _run(state) → errors? → ERROR 로그 "exhausted 3 retries"
+             → 마지막 결과 반환 (파이프라인 중단 없음)
+```
+
+실패 시 `state["validation_errors"]` 에 에러 내용 기록:
+```python
+{"funnel_agent": ["첫 단계 user_count == 0 — 데이터 범위 또는 event_name 불일치 확인 필요"]}
+```
+
+### Agent별 비즈니스 검증 조건
+
+| agent | 검증 조건 |
+|---|---|
+| `funnel_agent` | 첫 단계 `user_count == 0` |
+| `cohort_agent` | `cohorts` 리스트 비어있음 |
+| `journey_agent` | `total_sessions == 0` |
+| `performance_agent` | `session_count == 0` |
+| `prediction_agent` | 전체 predictions가 모두 `skipped` |
+| `anomaly_agent` | 검증 제외 (내부 baseline 부족 경고로 충분) |
+
+### Sub-agent Output Pydantic 모델 (`app/core/models.py`)
+
+`FunnelMetrics`, `CohortMetrics`, `JourneyMetrics`, `PerformanceMetrics`, `AnomalyMetrics`, `PredictionMetrics` — 각 agent 출력 dict의 스키마 정의.
+
+---
+
+## PPT Agent 슬라이드 구조
+
+8슬라이드 고정 구조. `PPT_OUTPUT_DIR` 환경변수로 출력 경로 지정 (기본 `/tmp/ppt_reports/`).
+
+| 슬라이드 | 제목 | 시각화 |
+|---|---|---|
+| Slide 1 | Executive Summary | KPI 카드 3개 (매출/전환율/세션) + WoW 증감 |
+| Slide 2 | 주요 지표 현황 | KPI 테이블 + 일별 breakdown |
+| Slide 3 | 이상 감지 결과 | Z-score 강조 테이블 (|z|≥3 빨간색) |
+| Slide 4 | 사용자 흐름 분석 | 퍼널 테이블 + 전환 경로 Top 5 |
+| Slide 5 | 고객 세그먼트 분석 | 디바이스/소스별 비교 + 코호트 요약 |
+| Slide 6 | **도메인 가변** | e-commerce: 카테고리별 구매 테이블 |
+| Slide 7 | 예측 및 시사점 | 예측값 + 신뢰구간 + LLM 코멘트 |
+| Slide 8 | 권장 액션 | P1/P2/P3 우선순위 + 교차 분석 인사이트 |
+
+**도메인 전환 시 Slide 6만 수정** (`_build_slide6_domain` 함수 내 분기 추가).
+
+---
+
 ## 다음 작업 우선순위
 
-1. **ppt_agent** — InsightReport.slide_order 순서대로 python-pptx 슬라이드 생성
-2. **pipeline.py** — LangGraph StateGraph 정의 (schema_mapping 후 6개 병렬 팬아웃)
+1. **pipeline.py** — LangGraph StateGraph 정의 (schema_mapping 후 6개 병렬 팬아웃)
+2. **db/mongo.py** — motor 연결 구현, raw_logs MongoDB에서 직접 로드
 3. **rag_tool / web_search_tool** — context_agent에서 실제 RAG/웹검색 활성화
-4. **db/mongo.py** — motor 연결 구현, raw_logs MongoDB에서 직접 로드
-5. **routers/analysis.py** — Celery task로 파이프라인 실행 연결
+4. **routers/analysis.py** — Celery task로 파이프라인 실행 연결
