@@ -1,11 +1,9 @@
 """Funnel Analysis Agent — step-level conversion and drop-off rates.
 
 Input  (PipelineState keys consumed):
-    week_start     : str        — "YYYYMMDD"
-    week_end       : str        — "YYYYMMDD"
-    field_mapping  : dict       — from schema_mapping_agent
-    raw_logs       : list[dict] — weekly raw log records
-    domain_context : dict       — DomainContext.model_dump()
+    week_start     : str  — "YYYYMMDD"
+    week_end       : str  — "YYYYMMDD"
+    domain_context : dict — DomainContext.model_dump()
 
 Output (PipelineState keys produced):
     funnel_metrics : dict
@@ -14,71 +12,32 @@ Output (PipelineState keys produced):
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
 
 from pydantic import ValidationError
 
-from app.agents._ga4_utils import get_device_category, get_traffic_source, in_range
+from app.agents._ga4_utils import PREPROCESS_STAGE
 from app.agents._agent_utils import error_patch, validate_or_retry
 from app.core.models import FunnelMetrics
+from app.db.mongo import get_collection
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _get_breakdown_value(doc: dict, breakdown: str) -> str:
-    if breakdown == "device_category":
-        return get_device_category(doc)
-    if breakdown == "traffic_source":
-        return get_traffic_source(doc)
-    return "unknown"
-
 
 # ---------------------------------------------------------------------------
-# Core aggregation
+# Step stats builder (pure Python — runs on aggregation results)
 # ---------------------------------------------------------------------------
 
-def _aggregate_funnel(
-    raw_logs: list[dict],
-    week_start: str,
-    week_end: str,
-    steps: list[str],
-    breakdowns: list[str],
-) -> dict:
-    step_users: dict[str, set] = {s: set() for s in steps}
-    breakdown_users: dict[str, dict[str, dict[str, set]]] = {
-        b: defaultdict(lambda: {s: set() for s in steps}) for b in breakdowns
-    }
-
-    for doc in raw_logs:
-        event_date = doc.get("event_date", "")
-        if not in_range(event_date, week_start, week_end):
-            continue
-        event_name = doc.get("event_name", "")
-        if event_name not in steps:
-            continue
-        uid = doc.get("user_pseudo_id", "")
-        if not uid:
-            continue
-
-        step_users[event_name].add(uid)
-
-        for bd in breakdowns:
-            dim_val = _get_breakdown_value(doc, bd)
-            breakdown_users[bd][dim_val][event_name].add(uid)
-
-    return {"step_users": step_users, "breakdown_users": breakdown_users}
-
-
-def _build_step_stats(steps: list[str], step_users: dict[str, set]) -> list[dict]:
-    first_count = len(step_users.get(steps[0], set())) if steps else 0
+def _build_step_stats(steps: list[str], step_users: dict[str, int]) -> list[dict]:
+    first_count = step_users.get(steps[0], 0) if steps else 0
     result = []
     prev_count = first_count
     for i, step in enumerate(steps):
-        count = len(step_users.get(step, set()))
-        drop_off_rate = round((prev_count - count) / prev_count * 100, 2) if prev_count > 0 and i > 0 else 0.0
+        count = step_users.get(step, 0)
+        drop_off_rate = (
+            round((prev_count - count) / prev_count * 100, 2)
+            if prev_count > 0 and i > 0
+            else 0.0
+        )
         conversion_rate = round(count / first_count, 4) if first_count > 0 else 0.0
         result.append({
             "event_name": step,
@@ -124,41 +83,112 @@ def _validate(metrics: dict) -> list[str]:
 # ---------------------------------------------------------------------------
 
 async def funnel_agent(state: dict) -> dict:
-    """LangGraph node: compute funnel conversion and drop-off rates."""
+    """LangGraph node: compute funnel conversion and drop-off rates via MongoDB aggregation."""
     domain_context: dict = state.get("domain_context", {})
     funnel_cfg: dict = domain_context.get("funnel_config", {})
     steps: list[str] = funnel_cfg.get("steps", [
         "session_start", "view_item", "add_to_cart", "begin_checkout", "purchase"
     ])
-    breakdowns: list[str] = domain_context.get("performance_config", {}).get(
-        "breakdowns", ["traffic_source", "device_category"]
-    )
 
     async def _run(s: dict) -> tuple[dict, list[str]]:
         week_start: str = s.get("week_start", "")
         week_end: str = s.get("week_end", "")
-        raw_logs: list[dict] = s.get("raw_logs", [])
+        col = get_collection("raw_logs")
 
-        agg = _aggregate_funnel(raw_logs, week_start, week_end, steps, breakdowns)
-        step_users = agg["step_users"]
-        breakdown_users = agg["breakdown_users"]
+        # ── Step-level unique user counts ──────────────────────────────────────
+        step_pipeline = [
+            {"$match": {
+                "event_date": {"$gte": week_start, "$lte": week_end},
+                "event_name": {"$in": steps},
+            }},
+            PREPROCESS_STAGE,
+            {"$group": {
+                "_id": "$event_name",
+                "users": {"$addToSet": "$user_pseudo_id"},
+            }},
+            {"$project": {
+                "event_name": "$_id",
+                "user_count": {"$size": "$users"},
+                "_id": 0,
+            }},
+        ]
+        step_docs = await col.aggregate(step_pipeline).to_list(length=None)
+        step_users: dict[str, int] = {d["event_name"]: d["user_count"] for d in step_docs}
 
         step_stats = _build_step_stats(steps, step_users)
         first_count = step_stats[0]["user_count"] if step_stats else 0
         last_count = step_stats[-1]["user_count"] if step_stats else 0
         overall_cvr = round(last_count / first_count, 4) if first_count > 0 else 0.0
 
-        breakdowns_result: dict[str, dict] = {}
-        for bd in breakdowns:
-            breakdowns_result[bd] = {}
-            for dim_val, dim_step_users in breakdown_users[bd].items():
-                bd_stats = _build_step_stats(steps, dim_step_users)
-                bd_first = bd_stats[0]["user_count"] if bd_stats else 0
-                bd_last = bd_stats[-1]["user_count"] if bd_stats else 0
-                breakdowns_result[bd][dim_val] = {
-                    "overall_conversion_rate": round(bd_last / bd_first, 4) if bd_first > 0 else 0.0,
-                    "steps": bd_stats,
-                }
+        # ── Breakdowns via $facet ──────────────────────────────────────────────
+        facet_pipeline = [
+            {"$match": {
+                "event_date": {"$gte": week_start, "$lte": week_end},
+                "event_name": {"$in": steps},
+            }},
+            PREPROCESS_STAGE,
+            {"$facet": {
+                "by_device": [
+                    {"$group": {
+                        "_id": {"event": "$event_name", "device": "$device.category"},
+                        "users": {"$addToSet": "$user_pseudo_id"},
+                    }},
+                    {"$project": {
+                        "event_name": "$_id.event",
+                        "device": "$_id.device",
+                        "user_count": {"$size": "$users"},
+                        "_id": 0,
+                    }},
+                ],
+                "by_source": [
+                    {"$group": {
+                        "_id": {"event": "$event_name", "source": "$traffic_source.source"},
+                        "users": {"$addToSet": "$user_pseudo_id"},
+                    }},
+                    {"$project": {
+                        "event_name": "$_id.event",
+                        "source": "$_id.source",
+                        "user_count": {"$size": "$users"},
+                        "_id": 0,
+                    }},
+                ],
+            }},
+        ]
+        facet_docs = await col.aggregate(facet_pipeline).to_list(length=None)
+        facet = facet_docs[0] if facet_docs else {"by_device": [], "by_source": []}
+
+        # Build breakdown step_users dicts
+        def _facet_to_breakdowns(rows: list[dict], dim_key: str) -> dict[str, dict[str, int]]:
+            result: dict[str, dict[str, int]] = {}
+            for row in rows:
+                dim_val = row.get(dim_key) or "unknown"
+                event = row.get("event_name", "")
+                result.setdefault(dim_val, {})[event] = row.get("user_count", 0)
+            return result
+
+        device_bd = _facet_to_breakdowns(facet["by_device"], "device")
+        source_bd = _facet_to_breakdowns(facet["by_source"], "source")
+
+        breakdowns_result: dict[str, dict] = {
+            "device_category": {},
+            "traffic_source": {},
+        }
+        for dim_val, su in device_bd.items():
+            bd_stats = _build_step_stats(steps, su)
+            bd_first = bd_stats[0]["user_count"] if bd_stats else 0
+            bd_last = bd_stats[-1]["user_count"] if bd_stats else 0
+            breakdowns_result["device_category"][dim_val] = {
+                "overall_conversion_rate": round(bd_last / bd_first, 4) if bd_first > 0 else 0.0,
+                "steps": bd_stats,
+            }
+        for dim_val, su in source_bd.items():
+            bd_stats = _build_step_stats(steps, su)
+            bd_first = bd_stats[0]["user_count"] if bd_stats else 0
+            bd_last = bd_stats[-1]["user_count"] if bd_stats else 0
+            breakdowns_result["traffic_source"][dim_val] = {
+                "overall_conversion_rate": round(bd_last / bd_first, 4) if bd_first > 0 else 0.0,
+                "steps": bd_stats,
+            }
 
         metrics = {
             "steps": step_stats,
