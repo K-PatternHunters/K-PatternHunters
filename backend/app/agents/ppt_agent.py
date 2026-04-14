@@ -909,7 +909,8 @@ async def ppt_agent(state: dict) -> dict:
 
     os.makedirs(_OUTPUT_DIR, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename  = f"{domain}_{week_start}_{week_end}_{timestamp}.pptx"
+    safe_domain = domain.replace("/", "_").replace(" ", "_")
+    filename  = f"{safe_domain}_{week_start}_{week_end}_{timestamp}.pptx"
     filepath  = os.path.join(_OUTPUT_DIR, filename)
     prs.save(filepath)
 

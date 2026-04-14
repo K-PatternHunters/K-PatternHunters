@@ -19,7 +19,20 @@ router = APIRouter()
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _bq_int64_to_int(v: dict) -> int:
+    """BigQuery INT64 wire format {"high": H, "low": L, "unsigned": bool} → Python int."""
+    high = v.get("high", 0) or 0
+    low  = v.get("low",  0) or 0
+    # low is stored as a signed 32-bit value; convert to unsigned before combining
+    if low < 0:
+        low += 1 << 32
+    return (high << 32) | low
+
+
 def _make_param_value(v) -> dict:
+    # BigQuery INT64 wire format → int_value
+    if isinstance(v, dict) and set(v.keys()) >= {"high", "low", "unsigned"}:
+        return {"int_value": _bq_int64_to_int(v)}
     if isinstance(v, int):
         return {"int_value": v}
     if isinstance(v, float):
@@ -73,7 +86,7 @@ async def _run_pipeline(job_id: str, request: AnalysisRequest) -> None:
             query["_id"] = {"$in": request.log_ids}
         # If neither is provided, load the full collection (useful for testing)
 
-        raw_docs = await events_col.find(query).to_list(length=100_000)
+        raw_docs = await events_col.find(query).to_list(length=500_000)
         raw_logs = [_prepare_doc(doc) for doc in raw_docs]
 
         await job_col.update_one(
@@ -96,12 +109,14 @@ async def _run_pipeline(job_id: str, request: AnalysisRequest) -> None:
 
         # ── 3. Persist result ──────────────────────────────────────────────────
         insight_report = result_state.get("insight_report", {})
+        ppt_url = result_state.get("ppt_url")
         result_col = get_collection("analysis_results")
         await result_col.replace_one(
             {"job_id": job_id},
             {
                 "job_id": job_id,
                 "insight_report": insight_report,
+                "ppt_url": ppt_url,
                 "created_at": datetime.now(tz=timezone.utc),
             },
             upsert=True,
@@ -109,7 +124,7 @@ async def _run_pipeline(job_id: str, request: AnalysisRequest) -> None:
 
         await job_col.update_one(
             {"job_id": job_id},
-            {"$set": {"status": "done", "progress": 100}},
+            {"$set": {"status": "done", "progress": 100, "ppt_url": ppt_url}},
         )
 
     except Exception as exc:
