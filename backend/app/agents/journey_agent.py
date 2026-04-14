@@ -16,7 +16,11 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 
+from pydantic import ValidationError
+
 from app.agents._ga4_utils import get_session_id, in_range
+from app.agents._agent_utils import error_patch, validate_or_retry
+from app.core.models import JourneyMetrics
 
 logger = logging.getLogger(__name__)
 
@@ -138,49 +142,78 @@ def _pre_churn_pattern(churned_paths: list[dict]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Business-logic validation
+# ---------------------------------------------------------------------------
+
+def _validate(metrics: dict) -> list[str]:
+    errors: list[str] = []
+    summary = metrics.get("summary", {})
+    if summary.get("total_sessions", 0) == 0:
+        errors.append(
+            "total_sessions == 0 — 해당 기간에 session_id를 가진 이벤트가 없음, "
+            "week_start/week_end 범위 또는 get_session_id 파싱 확인 필요"
+        )
+    return errors
+
+
+# ---------------------------------------------------------------------------
 # Agent entry point
 # ---------------------------------------------------------------------------
 
 async def journey_agent(state: dict) -> dict:
     """LangGraph node: session journey paths, transition matrix, pre-churn pattern."""
-    week_start: str = state.get("week_start", "")
-    week_end: str = state.get("week_end", "")
-    raw_logs: list[dict] = state.get("raw_logs", [])
     domain_context: dict = state.get("domain_context", {})
-
     journey_cfg: dict = domain_context.get("journey_config", {})
     top_n: int = journey_cfg.get("top_n", 10)
     max_depth: int = journey_cfg.get("max_depth", 5)
     entry_events: list[str] = journey_cfg.get("entry_events", ["session_start"])
     exit_events: list[str] = journey_cfg.get("exit_events", ["purchase", "session_end"])
 
-    sessions = _build_sessions(raw_logs, week_start, week_end, max_depth, entry_events, exit_events)
-    converted_paths, churned_paths = _build_path_stats(sessions, exit_events, top_n)
-    transition_matrix = _build_transition_matrix(sessions)
+    async def _run(s: dict) -> tuple[dict, list[str]]:
+        week_start: str = s.get("week_start", "")
+        week_end: str = s.get("week_end", "")
+        raw_logs: list[dict] = s.get("raw_logs", [])
 
-    total_sessions = len(sessions)
-    converted_sessions = sum(1 for s in sessions if _is_converted(s["path"], exit_events))
-    churned_sessions = total_sessions - converted_sessions
+        sessions = _build_sessions(raw_logs, week_start, week_end, max_depth, entry_events, exit_events)
+        converted_paths, churned_paths = _build_path_stats(sessions, exit_events, top_n)
+        transition_matrix = _build_transition_matrix(sessions)
 
-    most_common_converted = converted_paths[0]["path"] if converted_paths else []
+        total_sessions = len(sessions)
+        converted_sessions = sum(1 for s in sessions if _is_converted(s["path"], exit_events))
+        churned_sessions = total_sessions - converted_sessions
 
-    journey_metrics = {
-        "converted_paths": converted_paths,
-        "churned_paths": churned_paths,
-        "transition_matrix": transition_matrix,
-        "summary": {
-            "total_sessions": total_sessions,
-            "converted_sessions": converted_sessions,
-            "churned_sessions": churned_sessions,
-            "most_common_converted_path": most_common_converted,
-            "pre_churn_pattern": _pre_churn_pattern(churned_paths),
-        },
-    }
+        metrics = {
+            "converted_paths": converted_paths,
+            "churned_paths": churned_paths,
+            "transition_matrix": transition_matrix,
+            "summary": {
+                "total_sessions": total_sessions,
+                "converted_sessions": converted_sessions,
+                "churned_sessions": churned_sessions,
+                "most_common_converted_path": converted_paths[0]["path"] if converted_paths else [],
+                "pre_churn_pattern": _pre_churn_pattern(churned_paths),
+            },
+        }
+        return metrics, _validate(metrics)
 
+    journey_metrics, validation_errors = await validate_or_retry(
+        run_fn=_run,
+        state=state,
+        agent_name="journey_agent",
+        state_key="journey_metrics",
+    )
+
+    summary = journey_metrics.get("summary", {})
     logger.info(
         "journey_agent: total_sessions=%d  converted=%d  churned=%d",
-        total_sessions,
-        converted_sessions,
-        churned_sessions,
+        summary.get("total_sessions", 0),
+        summary.get("converted_sessions", 0),
+        summary.get("churned_sessions", 0),
     )
-    return {"journey_metrics": journey_metrics}
+
+    try:
+        JourneyMetrics(**journey_metrics)
+    except ValidationError as exc:
+        logger.warning("journey_agent: schema validation failed — %s", exc)
+
+    return {"journey_metrics": journey_metrics, **error_patch("journey_agent", validation_errors)}
