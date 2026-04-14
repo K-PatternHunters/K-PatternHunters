@@ -1,0 +1,51 @@
+name: CI
+
+# Runs on every push to develop/main and on all PRs targeting those branches.
+# Currently performs: lint + Docker build smoke test.
+# TODO: add pytest and vue unit test steps once tests are written.
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+  lint-backend:
+    name: Lint Backend (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff
+      - run: ruff check backend/
+
+  lint-frontend:
+    name: Lint Frontend (eslint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --prefix frontend
+      - run: npm run lint --prefix frontend
+
+  docker-build:
+    name: Docker Compose Build
+    runs-on: ubuntu-latest
+    needs: [lint-backend, lint-frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Copy env example
+        run: cp .env.example .env
+      - name: Build all images
+        run: docker compose build --no-cache

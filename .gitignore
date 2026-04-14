@@ -1,0 +1,56 @@
+# ─── Environment ───────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ─── Python ────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# ─── Node / Vue ────────────────────────────────
+node_modules/
+dist/
+.nuxt/
+.output/
+.cache/
+*.local
+
+# ─── Docker ────────────────────────────────────
+# (docker-compose override files with local secrets)
+docker-compose.override.yml
+
+# ─── IDEs ──────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ─── Data / Artifacts ──────────────────────────
+data/raw/
+*.pptx
+*.csv
+*.parquet
+*.log
+logs/
+
+# ─── Qdrant / Mongo local volumes ──────────────
+qdrant_storage/
+mongo_data/

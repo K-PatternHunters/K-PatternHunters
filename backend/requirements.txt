@@ -1,0 +1,28 @@
+# Web framework
+fastapi
+uvicorn
+
+# AI / LLM orchestration — langchain v1.0+ compatible
+langgraph
+langchain
+langchain-openai
+langchain-community
+openai
+
+# Database
+pymongo
+qdrant-client
+
+# PPT generation
+python-pptx
+
+# Task queue
+celery
+redis
+
+# Config / utilities
+python-dotenv
+
+# Code quality (dev)
+ruff
+black
