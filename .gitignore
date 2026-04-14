@@ -55,3 +55,4 @@ logs/
 # ─── Qdrant / Mongo local volumes ──────────────
 qdrant_storage/
 mongo_data/
+secrets/
