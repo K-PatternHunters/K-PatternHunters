@@ -23,6 +23,13 @@ redis
 # Config / utilities
 python-dotenv
 
+# Config
+pydantic-settings
+
 # Code quality (dev)
 ruff
 black
+
+# Testing (dev)
+pytest
+pytest-asyncio
