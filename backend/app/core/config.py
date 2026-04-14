@@ -1,22 +1,21 @@
 """Loads and validates all environment variables using Pydantic BaseSettings."""
 
-# TODO: define Settings(BaseSettings) with:
-#   OPENAI_API_KEY, MONGODB_URI, QDRANT_URL, REDIS_URL, APP_ENV, SECRET_KEY
-# TODO: expose a cached `get_settings()` dependency for FastAPI
+from functools import lru_cache
 
-# from pydantic_settings import BaseSettings  # pydantic v2 / langchain v1.0+ compatible
+from pydantic_settings import BaseSettings
 
 
-class Settings:
-    # Placeholder — replace with BaseSettings subclass
+class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
-    MONGODB_URI: str = ""
-    QDRANT_URL: str = ""
-    REDIS_URL: str = ""
+    MONGODB_URI: str = "mongodb://localhost:27017/customer_behavior"
+    QDRANT_URL: str = "http://localhost:6333"
+    REDIS_URL: str = "redis://localhost:6379/0"
     APP_ENV: str = "development"
     SECRET_KEY: str = ""
 
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
+
+@lru_cache
 def get_settings() -> Settings:
-    # Placeholder — implementation pending
     return Settings()
