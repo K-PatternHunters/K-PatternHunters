@@ -6,10 +6,9 @@ Graph topology (고정 순서):
        │
     context_agent          ← 항상 고정: 도메인 컨텍스트 생성 (LLM + RAG + 웹검색)
        │
-    schema_mapping_agent   ← 항상 고정: GA4 필드 → 정규화 필드명 매핑
-       │
     analysis_dispatcher    ← 병렬 실행: domain_context.recommended_sub_agents 기반
        │  (funnel / cohort / journey / performance / anomaly / prediction 중 선택)
+       │  각 에이전트가 MongoDB aggregation으로 직접 데이터 조회
        │
     insight_agent          ← 항상 고정: 분석 결과 종합 → InsightReport (LLM)
        │
@@ -22,9 +21,8 @@ State 전달 전략
 ─────────────────────────────────────────────────────────────────
 
 1. As-is 전달 (원본 구조/값 그대로 유지)
-   - raw_logs        : 분석 에이전트 전체가 원본 이벤트 로그를 직접 순회
    - domain_context  : 에이전트별 config (funnel_config.steps 등) 그대로 참조
-   - field_mapping   : 정규화 필드명 매핑 — 분석 에이전트가 정확한 키를 필요로 함
+   - week_start/end  : 각 에이전트가 MongoDB $match 범위로 직접 사용
    - insight_report  : SlideContent 구조 — ppt_agent가 렌더링 시 변형 없이 소비
 
 2. 요약 처리 (LLM 컨텍스트 윈도우 관리)
@@ -56,7 +54,6 @@ from app.agents.journey_agent import journey_agent
 from app.agents.performance_agent import performance_agent
 from app.agents.prediction_agent import prediction_agent
 from app.agents.ppt_agent import ppt_agent
-from app.agents.schema_mapping_agent import schema_mapping_agent
 from app.core.models import PipelineState
 
 logger = logging.getLogger(__name__)
@@ -141,19 +138,17 @@ def _build_graph() -> StateGraph:
     builder = StateGraph(PipelineState)
 
     # 노드 등록
-    builder.add_node("context_agent",        context_agent)
-    builder.add_node("schema_mapping_agent", schema_mapping_agent)
-    builder.add_node("analysis_dispatcher",  analysis_dispatcher)
-    builder.add_node("insight_agent",        insight_agent)
-    builder.add_node("ppt_agent",            ppt_agent)
+    builder.add_node("context_agent",       context_agent)
+    builder.add_node("analysis_dispatcher", analysis_dispatcher)
+    builder.add_node("insight_agent",       insight_agent)
+    builder.add_node("ppt_agent",           ppt_agent)
 
     # 고정 순서 엣지
-    builder.add_edge(START,                  "context_agent")
-    builder.add_edge("context_agent",        "schema_mapping_agent")
-    builder.add_edge("schema_mapping_agent", "analysis_dispatcher")
-    builder.add_edge("analysis_dispatcher",  "insight_agent")
-    builder.add_edge("insight_agent",        "ppt_agent")
-    builder.add_edge("ppt_agent",            END)
+    builder.add_edge(START,                 "context_agent")
+    builder.add_edge("context_agent",       "analysis_dispatcher")
+    builder.add_edge("analysis_dispatcher", "insight_agent")
+    builder.add_edge("insight_agent",       "ppt_agent")
+    builder.add_edge("ppt_agent",           END)
 
     return builder
 

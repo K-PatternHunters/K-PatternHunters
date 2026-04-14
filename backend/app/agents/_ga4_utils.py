@@ -10,6 +10,34 @@ from datetime import datetime, timedelta
 
 
 # ---------------------------------------------------------------------------
+# MongoDB aggregation — common preprocessing stage
+# ---------------------------------------------------------------------------
+
+# Insert as the first stage (after $match) in every agent's aggregation pipeline.
+#
+# What it does:
+#   - "revenue": purchase_revenue_in_usd first, fallback to purchase_revenue, then 0
+#   - "transaction_id_clean": normalise "(not set)" / "" / null → null
+PREPROCESS_STAGE: dict = {
+    "$addFields": {
+        "revenue": {
+            "$ifNull": [
+                "$ecommerce.purchase_revenue_in_usd",
+                {"$ifNull": ["$ecommerce.purchase_revenue", 0]},
+            ]
+        },
+        "transaction_id_clean": {
+            "$cond": [
+                {"$in": ["$ecommerce.transaction_id", ["(not set)", "", None]]},
+                None,
+                "$ecommerce.transaction_id",
+            ]
+        },
+    }
+}
+
+
+# ---------------------------------------------------------------------------
 # event_params extraction
 # ---------------------------------------------------------------------------
 
