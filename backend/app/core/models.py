@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 
 from pydantic import BaseModel, Field
+
+
+def _keep(existing, new):
+    """LangGraph reducer: retain existing value when node does not update the field."""
+    return new if new is not None else existing
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -14,6 +19,8 @@ from pydantic import BaseModel, Field
 class AnalysisRequest(BaseModel):
     period: Literal["daily", "weekly", "monthly"] = "weekly"
     domain_description: str
+    week_start: str = ""   # YYYYMMDD — MongoDB query range start (inclusive)
+    week_end: str = ""     # YYYYMMDD — MongoDB query range end (inclusive)
     log_ids: list[str] = []
 
 
@@ -375,31 +382,36 @@ class PipelineState(TypedDict, total=False):
     """Shared state dict passed through every node of the LangGraph pipeline."""
 
     # ── inputs ────────────────────────────────────────────────────────────────
-    job_id: str
-    period: str                        # "daily" | "weekly" | "monthly"
-    domain_description: str
-    raw_logs: list[dict]               # raw weekly log records
-    log_ids: list[str]                 # MongoDB IDs of raw log documents
+    # str/dict fields use _keep reducer so LangGraph preserves them when nodes
+    # do not explicitly return the key (LangGraph 1.x resets unwritten str fields to None).
+    job_id: Annotated[str, _keep]
+    period: Annotated[str, _keep]               # "daily" | "weekly" | "monthly"
+    domain_description: Annotated[str, _keep]
+    raw_logs: list[dict]                         # raw weekly log records
+    log_ids: list[str]                           # MongoDB IDs of raw log documents
+    week_start: Annotated[str, _keep]            # "YYYYMMDD"
+    week_end: Annotated[str, _keep]              # "YYYYMMDD"
 
     # ── context_agent output ──────────────────────────────────────────────────
-    domain_context: dict               # DomainContext.model_dump()
+    domain_context: Annotated[dict, _keep]       # DomainContext.model_dump()
 
     # ── supervisor output ─────────────────────────────────────────────────────
-    sub_agents_plan: list[str]         # ordered list of sub-agent names to run
+    sub_agents_plan: list[str]                   # ordered list of sub-agent names to run
 
     # ── schema_mapping_agent output ───────────────────────────────────────────
     normalized_logs: list[dict]
+    field_mapping: Annotated[dict, _keep]
 
     # ── sub-agent outputs ─────────────────────────────────────────────────────
-    funnel_metrics: dict
-    cohort_metrics: dict
-    journey_metrics: dict
-    performance_metrics: dict
-    anomaly_metrics: dict
-    prediction_metrics: dict
+    funnel_metrics: Annotated[dict, _keep]
+    cohort_metrics: Annotated[dict, _keep]
+    journey_metrics: Annotated[dict, _keep]
+    performance_metrics: Annotated[dict, _keep]
+    anomaly_metrics: Annotated[dict, _keep]
+    prediction_metrics: Annotated[dict, _keep]
 
     # ── insight_agent output ──────────────────────────────────────────────────
-    insight_report: dict
+    insight_report: Annotated[dict, _keep]
 
     # ── ppt_agent output ──────────────────────────────────────────────────────
-    ppt_url: str
+    ppt_url: Annotated[str, _keep]
