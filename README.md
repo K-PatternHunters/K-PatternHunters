@@ -1,6 +1,6 @@
 # K-PatternHunters — 고객 행동 패턴 분석 자동화 시스템
 
-GA4 e-커머스 로그 데이터를 주간 단위로 분석하고, 멀티 에이전트 AI 파이프라인을 통해 PowerPoint 보고서를 자동 생성하는 시스템입니다.
+웹 앱 로그 데이터를 분석하고, 멀티 에이전트 AI 파이프라인을 통해 PowerPoint 보고서를 자동 생성하는 시스템입니다.
 
 ---
 
@@ -206,10 +206,11 @@ K-PatternHunters/
 
 ---
 
-## 팀
+## 팀 (Roles & Responsibilities)
 
 | 담당자 | 담당 범위 |
 |---|---|
-| epk4429 | context_agent, insight_agent, 데이터 모델, 테스트 |
-| jy팀 | 분석 에이전트 전체, ppt_agent, 인프라 |
-| front팀 | Vue 3 프론트엔드 |
+| 기동주 | Backend Develop |
+| 김정우 | Frontend Develop |
+| 서제임스 | Data Engineering |
+| 신준용 | Backend Develop |
