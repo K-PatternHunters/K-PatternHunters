@@ -5,6 +5,12 @@
     <div class="dashboard-container">
       <header class="main-header">
         <div class="brand-identity">
+          <button class="back-btn" @click="router.push('/')">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <path d="M10 3L5 8L10 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Back
+          </button>
           <img class="brand-icon" :src="brandImage" alt="PatternHunters brand" />
           <div class="brand-text">
             <h1>PatternHunters</h1>
@@ -35,23 +41,6 @@
           <section class="settings-card premium-glass">
             <h2 class="section-title">
               <span class="title-decor"></span>
-              Domain Specification
-            </h2>
-            <div class="textarea-container">
-              <textarea 
-                v-model="domainDescription" 
-                placeholder="분석 대상 도메인의 비즈니스 로직, 사용자 여정의 특이사항, 그리고 에이전트가 집중해야 할 분석 포인트를 상세히 기술하십시오."
-                :disabled="isAnalyzing"
-              ></textarea>
-              <div class="textarea-footer">
-                <span class="char-count"><strong>{{ domainDescription.length }}</strong> / 500 CHARACTERS</span>
-              </div>
-            </div>
-          </section>
-
-          <section class="settings-card premium-glass">
-            <h2 class="section-title">
-              <span class="title-decor"></span>
               Analysis Date Range
             </h2>
             <div class="date-range-group">
@@ -63,6 +52,23 @@
               <div class="date-field">
                 <label class="date-label">END</label>
                 <input type="date" class="date-input" v-model="weekEnd" :disabled="isAnalyzing" />
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-card premium-glass">
+            <h2 class="section-title">
+              <span class="title-decor"></span>
+              Domain Specification
+            </h2>
+            <div class="textarea-container">
+              <textarea
+                v-model="domainDescription"
+                placeholder="분석 대상 도메인의 비즈니스 로직, 사용자 여정의 특이사항, 그리고 에이전트가 집중해야 할 분석 포인트를 상세히 기술하십시오."
+                :disabled="isAnalyzing"
+              ></textarea>
+              <div class="textarea-footer">
+                <span class="char-count"><strong>{{ domainDescription.length }}</strong> / 500 CHARACTERS</span>
               </div>
             </div>
           </section>
@@ -148,11 +154,11 @@
       <div class="bar-container">
         <div class="copyright">© 2026 PATTERN HUNTERS, Inc. All rights reserved.</div>
         <div class="system-meta">
-          <span>FRAMEWORK: MULTI_AGENT_RAG_v3.1</span>
+          <span>FRAMEWORK: MULTI_AGENT_RAG_v1.0</span>
           <span class="divider">|</span>
-          <span>ENGINE: COGNITIVE_PATTERN_MATCHING_v5.0</span>
+          <span>ENGINE: COGNITIVE_PATTERN_MATCHING_v1.0</span>
           <span class="divider">|</span>
-          <span class="version">SYS_VER: _2.0.35</span>
+          <span class="version">SYS_VER: v1.0</span>
         </div>
       </div>
     </footer>
@@ -161,9 +167,12 @@
 
 <script setup>
 import { ref, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import brandImage from '../image.png'
 import { triggerAnalysis } from '../api/analysis.js'
 import { getJobStatus } from '../api/polling.js'
+
+const router = useRouter()
 
 const period = ref('weekly')
 const domainDescription = ref('')
@@ -263,21 +272,20 @@ const startAnalysis = async () => {
 /*  */
 
 .dashboard-wrapper {
-  /* 초대형 프리미엄 테마 색상 팔레트 */
   --bg-primary: #FFFFFF;
-  --bg-secondary: #F6F4F0; /* 더 따뜻하고 깊은 베이지 */
+  --bg-secondary: #F6F4F0;
   --accent-emerald: #10b981;
-  --accent-orange: #F26522; /* SK Orange */
-  --accent-red: #E31937;    /* SK Red */
-  --text-main: #111111;    /* 거의 검정 */
-  --text-muted: #555555;    /* 짙은 회색 */
+  --accent-orange: #F26522;
+  --accent-red: #E31937;
+  --text-main: #111111;
+  --text-muted: #555555;
   --border-color: rgba(0, 0, 0, 0.06);
-  --shadow-premium: 0 20px 50px rgba(0, 0, 0, 0.05);
-  
+  --shadow-premium: 0 10px 30px rgba(0, 0, 0, 0.05);
+
   min-height: 100vh;
   background-color: var(--bg-secondary);
   color: var(--text-main);
-  padding: 4rem 4rem 14rem 4rem; /* 하단 띠 공간을 위해 여백 대폭 증가 */
+  padding: 2rem 2rem 4rem 2rem;
   font-family: 'Pretendard', system-ui, -apple-system, sans-serif;
   position: relative;
   overflow-x: hidden;
@@ -303,42 +311,66 @@ const startAnalysis = async () => {
   z-index: 1;
 }
 
-/* Header: 웅장하고 미니멀한 전문성 */
+.back-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 32px;
+  padding: 0 0.75rem;
+  border: 1.5px solid var(--border-color);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.back-btn:hover {
+  border-color: var(--accent-orange);
+  color: var(--accent-orange);
+  background: rgba(242, 101, 34, 0.05);
+}
+
+/* Header */
 .main-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   background-color: var(--bg-primary);
-  padding: 2rem 3rem;
-  border-radius: 16px;
+  padding: 1rem 1.75rem;
+  border-radius: 12px;
   box-shadow: var(--shadow-premium);
   border: 1px solid var(--border-color);
-  margin-bottom: 5rem;
+  margin-bottom: 1.5rem;
 }
 
 .brand-identity {
   display: flex;
   align-items: center;
-  gap: 2.5rem;
+  gap: 1.25rem;
 }
 
 .brand-icon {
-  width: 96px;
-  height: 96px;
+  width: 52px;
+  height: 52px;
   object-fit: contain;
   display: block;
 }
 
 .brand-text h1 {
-  font-size: 2rem; /* 초대형 */
+  font-size: 1.35rem;
   font-weight: 900;
   letter-spacing: -0.02em;
   color: var(--text-main);
-  margin-bottom: 0.25rem;
+  margin-bottom: 0.1rem;
 }
 
 .brand-text p {
-  font-size: 1rem;
+  font-size: 0.8rem;
   color: var(--text-muted);
   font-weight: 500;
 }
@@ -346,68 +378,68 @@ const startAnalysis = async () => {
 .system-status-badge {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   background-color: #ECFDF5;
-  padding: 1rem 2rem;
+  padding: 0.5rem 1.25rem;
   border-radius: 50px;
   border: 1px solid #A7F3D0;
 }
 
 .status-dot {
-  width: 12px;
-  height: 12px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background-color: var(--accent-emerald);
-  box-shadow: 0 0 15px var(--accent-emerald);
+  box-shadow: 0 0 8px var(--accent-emerald);
 }
 
 .status-text {
-  font-size: 0.9rem;
+  font-size: 0.75rem;
   font-weight: 800;
   color: var(--accent-emerald);
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em;
 }
 
-/* Grid: 더 넓은 간격 */
+/* Grid */
 .dashboard-grid {
   display: grid;
-  grid-template-columns: 480px 1fr; /* 좌측 패널을 더 넓게 */
-  gap: 5rem;
+  grid-template-columns: 360px 1fr;
+  gap: 1.5rem;
 }
 
-/* Premium Glassmorphism Card 스타일 극대화 */
+/* Premium Glass Card */
 .premium-glass {
   background: rgba(255, 255, 255, 0.7);
   backdrop-filter: blur(20px);
   border: 1px solid rgba(255, 255, 255, 0.3);
-  padding: 3.5rem; /* 내벽 폭 대폭 증가 */
-  border-radius: 24px;
+  padding: 1.75rem;
+  border-radius: 16px;
   box-shadow: var(--shadow-premium);
 }
 
 .control-panel {
   display: flex;
   flex-direction: column;
-  gap: 3.5rem;
+  gap: 1.25rem;
 }
 
 .section-title {
-  font-size: 1.25rem;
+  font-size: 0.8rem;
   font-weight: 800;
   color: var(--text-main);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  margin-bottom: 2rem;
+  margin-bottom: 1rem;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
 }
 
 .title-decor {
-  width: 6px;
-  height: 24px;
+  width: 4px;
+  height: 16px;
   background: linear-gradient(180deg, var(--accent-orange) 0%, var(--accent-red) 100%);
-  border-radius: 3px;
+  border-radius: 2px;
 }
 
 /* Selector Group 대폭 확대 및 디자인 개선 */
@@ -455,22 +487,22 @@ const startAnalysis = async () => {
   color: #FFFFFF;
 }
 
-/* Textarea 대폭 확대 및 고급화 */
+/* Textarea */
 .textarea-container {
   background-color: var(--bg-primary);
-  border: 2px solid var(--border-color);
-  border-radius: 12px;
-  padding: 1.5rem;
+  border: 1.5px solid var(--border-color);
+  border-radius: 10px;
+  padding: 0.875rem;
 }
 
 textarea {
   width: 100%;
-  height: 280px; /* 초대형 */
+  height: 140px;
   border: none;
   background: transparent;
   color: var(--text-main);
-  font-size: 1.1rem;
-  line-height: 1.8;
+  font-size: 0.9rem;
+  line-height: 1.7;
   resize: none;
   font-family: inherit;
 }
@@ -488,31 +520,31 @@ textarea:focus { outline: none; }
 
 .char-count strong { color: var(--accent-orange); font-weight: 800; }
 
-/* 초대형 액션 버튼 */
+/* 액션 버튼 */
 .ultra-action-btn {
   width: 100%;
   max-width: 100%;
   box-sizing: border-box;
-  padding: 2.5rem; /* 초대형 */
+  padding: 1rem;
   background: linear-gradient(135deg, var(--accent-orange) 0%, var(--accent-red) 100%);
   border: none;
   color: #FFFFFF;
-  border-radius: 16px;
+  border-radius: 12px;
   cursor: pointer;
-  transition: all 0.4s ease;
-  box-shadow: 0 15px 40px rgba(227, 25, 55, 0.3);
+  transition: all 0.3s ease;
+  box-shadow: 0 8px 20px rgba(227, 25, 55, 0.25);
   position: relative;
   overflow: hidden;
 }
 
 .ultra-action-btn .btn-content {
-  font-size: 1.15rem;
+  font-size: 0.95rem;
   font-weight: 900;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 8px;
   white-space: normal;
   word-break: keep-all;
   text-align: center;
@@ -548,11 +580,11 @@ textarea:focus { outline: none; }
   to { transform: rotate(360deg); }
 }
 
-/* Display Panel: 더 압도적인 상태 표시 */
+/* Display Panel */
 .display-panel {
   background-color: var(--bg-primary);
-  border-radius: 24px;
-  padding: 4rem; /* 내벽 폭 대폭 증가 */
+  border-radius: 16px;
+  padding: 2rem;
   box-shadow: var(--shadow-premium);
   border: 1px solid var(--border-color);
 }
@@ -567,21 +599,21 @@ textarea:focus { outline: none; }
 }
 
 .placeholder-icon-massive {
-  width: 200px; /* 초대형 */
-  height: 200px;
-  margin-bottom: 3rem;
-}
-
-.massive-placeholder h3 {
-  font-size: 1.5rem;
-  font-weight: 800;
-  letter-spacing: 0.3em;
-  color: #CBD5E1;
+  width: 100px;
+  height: 100px;
   margin-bottom: 1.5rem;
 }
 
+.massive-placeholder h3 {
+  font-size: 1rem;
+  font-weight: 800;
+  letter-spacing: 0.2em;
+  color: #CBD5E1;
+  margin-bottom: 0.75rem;
+}
+
 .massive-placeholder p {
-  font-size: 1.1rem;
+  font-size: 0.875rem;
   color: #CBD5E1;
 }
 
@@ -594,11 +626,11 @@ textarea:focus { outline: none; }
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 4rem;
+  margin-bottom: 1.5rem;
 }
 
 .monitor-header h3 {
-  font-size: 1.5rem;
+  font-size: 1rem;
   font-weight: 800;
 }
 
@@ -635,21 +667,21 @@ textarea:focus { outline: none; }
   100% { opacity: 1; }
 }
 
-/* 초대형 프로그레스 바 */
+/* 프로그레스 바 */
 .massive-progress {
-  margin-bottom: 4rem;
+  margin-bottom: 1.5rem;
 }
 
 .progress-info-massive {
   display: flex;
   justify-content: space-between;
-  font-size: 1.1rem;
+  font-size: 0.875rem;
   font-weight: 800;
-  margin-bottom: 1.25rem;
+  margin-bottom: 0.75rem;
 }
 
 .status-msg { color: var(--text-main); }
-.percent-val { color: var(--accent-orange); font-size: 1.4rem; }
+.percent-val { color: var(--accent-orange); font-size: 1rem; }
 
 .progress-track-massive {
   height: 12px; /* 더 두껍게 */
@@ -697,14 +729,14 @@ textarea:focus { outline: none; }
 }
 
 .console-content {
-  padding: 1.5rem;
-  height: 400px; /* 초대형 */
+  padding: 1rem;
+  height: 240px;
   overflow-y: auto;
   font-family: 'Roboto Mono', monospace;
-  font-size: 0.95rem; /* 더 크게 */
+  font-size: 0.8rem;
 }
 
-.console-row { margin-bottom: 1rem; display: flex; gap: 1.5rem; }
+.console-row { margin-bottom: 0.6rem; display: flex; gap: 1rem; }
 .timestamp { color: var(--accent-emerald); font-weight: 500; }
 .agent-tag {
   color: #FFFFFF;
@@ -717,26 +749,26 @@ textarea:focus { outline: none; }
 .message { color: #E0E0E0; line-height: 1.6; }
 
 /* 결과 액션 */
-.final-actions { margin-top: 4rem; }
+.final-actions { margin-top: 1.5rem; }
 
 .massive-export-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
   max-width: 100%;
   box-sizing: border-box;
-  padding: 1.5rem; /* 초대형 */
+  padding: 0.875rem;
   background: linear-gradient(135deg, var(--accent-orange) 0%, #D65A1E 100%);
   color: #FFFFFF;
   text-decoration: none;
   font-weight: 900;
-  font-size: 1.2rem;
-  letter-spacing: 0.05em;
-  border-radius: 12px;
+  font-size: 0.95rem;
+  letter-spacing: 0.04em;
+  border-radius: 10px;
   transition: all 0.3s;
-  box-shadow: 0 10px 30px rgba(242, 101, 34, 0.3);
+  box-shadow: 0 6px 16px rgba(242, 101, 34, 0.25);
   text-align: center;
   word-break: keep-all;
 }
@@ -746,39 +778,40 @@ textarea:focus { outline: none; }
   box-shadow: 0 15px 40px rgba(242, 101, 34, 0.4);
 }
 
-/* 🆕 초대형 하단 Accent Bar: 정보 밀도 강화 */
+/* 하단 Accent Bar */
 .massive-bottom-bar {
   position: fixed;
   bottom: 0;
   left: 0;
   width: 100%;
-  height: 10rem; /* 더 두껍게 설정 */
+  height: 2.5rem;
   background: linear-gradient(135deg, var(--accent-orange) 0%, var(--accent-red) 100%);
   color: #FFFFFF;
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 10;
-  box-shadow: 0 -15px 40px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.1);
 }
 
 .bar-container {
-  width: 1600px;
+  width: 100%;
+  max-width: 1600px;
   margin: 0 auto;
-  padding: 0 4rem;
+  padding: 0 2rem;
   display: flex;
   justify-content: space-between;
   align-items: center;
   font-weight: 600;
-  font-size: 1rem; /* 더 크게 */
+  font-size: 0.75rem;
 }
 
 .system-meta {
   display: flex;
   align-items: center;
-  gap: 1.5rem;
+  gap: 1rem;
   font-family: 'Roboto Mono', monospace;
-  font-size: 0.85rem;
+  font-size: 0.72rem;
   opacity: 0.9;
 }
 
@@ -793,32 +826,34 @@ textarea:focus { outline: none; }
 /* Date Range */
 .date-range-group {
   display: flex;
-  align-items: center;
-  gap: 1rem;
+  flex-direction: column;
+  gap: 0.6rem;
 }
 
 .date-field {
-  flex: 1;
   display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
+  align-items: center;
+  gap: 0.6rem;
 }
 
 .date-label {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   font-weight: 800;
   color: var(--text-muted);
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em;
+  width: 2.5rem;
+  flex-shrink: 0;
 }
 
 .date-input {
-  width: 100%;
-  padding: 0.85rem 1rem;
-  border: 2px solid var(--border-color);
-  border-radius: 10px;
+  flex: 1;
+  min-width: 0;
+  padding: 0.45rem 0.6rem;
+  border: 1.5px solid var(--border-color);
+  border-radius: 8px;
   background-color: var(--bg-primary);
   color: var(--text-main);
-  font-size: 1rem;
+  font-size: 0.85rem;
   font-family: inherit;
   cursor: pointer;
   transition: border-color 0.2s;
@@ -837,10 +872,7 @@ textarea:focus { outline: none; }
 }
 
 .date-sep {
-  font-size: 1.2rem;
-  font-weight: 700;
-  color: var(--text-muted);
-  padding-top: 1.5rem;
+  display: none;
 }
 
 /* Error Panel */
