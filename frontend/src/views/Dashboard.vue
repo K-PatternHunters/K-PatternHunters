@@ -41,19 +41,15 @@
           <section class="settings-card premium-glass">
             <h2 class="section-title">
               <span class="title-decor"></span>
-              Analysis Date Range
+              Analysis Date
             </h2>
             <div class="date-range-group">
               <div class="date-field">
-                <label class="date-label">START</label>
-                <input type="date" class="date-input" v-model="weekStart" :disabled="isAnalyzing" />
-              </div>
-              <span class="date-sep">—</span>
-              <div class="date-field">
-                <label class="date-label">END</label>
-                <input type="date" class="date-input" v-model="weekEnd" :disabled="isAnalyzing" />
+                <label class="date-label">기준일</label>
+                <input type="date" class="date-input" v-model="analysisDate" :disabled="isAnalyzing" />
               </div>
             </div>
+            <p class="date-hint">{{ dateRangeHint }}</p>
           </section>
 
           <section class="settings-card premium-glass">
@@ -76,7 +72,7 @@
           <button
             class="ultra-action-btn"
             @click="startAnalysis"
-            :disabled="isAnalyzing || !domainDescription.trim()"
+            :disabled="isAnalyzing || !domainDescription.trim() || !analysisDate"
           >
             <span v-if="!isAnalyzing" class="btn-content">
               패턴 분석 실행
@@ -176,8 +172,7 @@ const router = useRouter()
 
 const period = ref('weekly')
 const domainDescription = ref('')
-const weekStart = ref('')
-const weekEnd = ref('')
+const analysisDate = ref('')
 const status = ref('idle')
 const progress = ref(0)
 const jobId = ref(null)
@@ -199,6 +194,26 @@ const periods = [
   { label: '주간', value: 'weekly' },
   { label: '월간', value: 'monthly' }
 ]
+
+const periodDays = { daily: 1, weekly: 7, monthly: 30 }
+
+const computedDateRange = computed(() => {
+  if (!analysisDate.value) return null
+  const end = new Date(analysisDate.value)
+  const start = new Date(analysisDate.value)
+  start.setDate(start.getDate() - periodDays[period.value])
+  const fmt = (d) => d.toISOString().slice(0, 10).replace(/-/g, '')
+  return { week_start: fmt(start), week_end: fmt(end) }
+})
+
+const dateRangeHint = computed(() => {
+  if (!analysisDate.value) return '기준일을 선택하면 분석 범위가 표시됩니다.'
+  const end = new Date(analysisDate.value)
+  const start = new Date(analysisDate.value)
+  start.setDate(start.getDate() - periodDays[period.value])
+  const fmt = (d) => `${d.getFullYear()}.${String(d.getMonth()+1).padStart(2,'0')}.${String(d.getDate()).padStart(2,'0')}`
+  return `${fmt(start)} ~ ${fmt(end)}`
+})
 
 const PROGRESS_LOG_MAP = {
   10:  { agent: 'PIPELINE',  msg: 'INITIALIZING_AGENTS' },
@@ -231,8 +246,8 @@ const startAnalysis = async () => {
   const payload = {
     period: period.value,
     domain_description: domainDescription.value,
-    week_start: weekStart.value.replace(/-/g, ''),
-    week_end: weekEnd.value.replace(/-/g, ''),
+    week_start: computedDateRange.value?.week_start ?? '',
+    week_end: computedDateRange.value?.week_end ?? '',
     log_ids: [],
   }
 
@@ -873,6 +888,13 @@ textarea:focus { outline: none; }
 
 .date-sep {
   display: none;
+}
+
+.date-hint {
+  margin-top: 0.6rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-family: 'Roboto Mono', monospace;
 }
 
 /* Error Panel */
