@@ -11,6 +11,7 @@ _ROOT_ENV = Path(__file__).parents[3] / ".env"
 
 class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
+    TAVILY_API_KEY: str = ""
 
     # MongoDB — individual components (used to build URI when MONGODB_URI is not set)
     MONGO_USER: str = ""

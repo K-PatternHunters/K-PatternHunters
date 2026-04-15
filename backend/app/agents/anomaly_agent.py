@@ -26,6 +26,7 @@ from app.db.mongo import get_collection
 logger = logging.getLogger(__name__)
 
 _LOOKBACK_WEEKS = 4
+_LOOKBACK_WEEKS_MAX = 26   # fallback when primary baseline is insufficient
 _MIN_BASELINE_DAYS = 7
 
 _LLM_SYSTEM_PROMPT = """\
@@ -195,11 +196,22 @@ async def anomaly_agent(state: dict) -> dict:
     baseline_daily = await _aggregate_daily(col, baseline_start, baseline_end)
 
     if len(baseline_daily) < _MIN_BASELINE_DAYS:
-        logger.warning(
-            "anomaly_agent: only %d baseline days available (need %d) — using all available",
-            len(baseline_daily),
-            _MIN_BASELINE_DAYS,
-        )
+        # Primary baseline (4 weeks) is insufficient — extend to up to 26 weeks
+        extended_start = shift_days(week_start, -7 * _LOOKBACK_WEEKS_MAX)
+        extended_daily = await _aggregate_daily(col, extended_start, baseline_end)
+        if len(extended_daily) > len(baseline_daily):
+            logger.info(
+                "anomaly_agent: extended baseline from %d to %d days (start=%s)",
+                len(baseline_daily), len(extended_daily), extended_start,
+            )
+            baseline_daily = extended_daily
+            baseline_start = extended_start
+        else:
+            logger.warning(
+                "anomaly_agent: only %d baseline days available even after extending to %d weeks",
+                len(baseline_daily),
+                _LOOKBACK_WEEKS_MAX,
+            )
 
     anomalies, clean_metrics = _detect_anomalies(current_daily, baseline_daily, target_metrics, threshold)
 
@@ -221,6 +233,8 @@ async def anomaly_agent(state: dict) -> dict:
             "total_anomalies": len(anomalies),
             "affected_metrics": affected_metrics,
             "most_abnormal_date": most_abnormal_date,
+            "baseline_days_available": len(baseline_daily),
+            "baseline_start": baseline_start,
         },
     }
 

@@ -54,6 +54,29 @@ services:
     networks:
       - app-network
 
+  # ── Celery Worker ─────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A app.worker.celery_app worker --loglevel=info
+    env_file:
+      - .env
+    environment:
+      MONGO_HOST: mongodb
+      PPT_OUTPUT_DIR: /tmp/ppt_reports
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./backend:/app
+      - hf_cache:/root/.cache/huggingface
+      - ppt_reports:/tmp/ppt_reports
+    networks:
+      - app-network
+
   # ── MongoDB (GA4 로그 저장소) ──────────────────────────────────────────────
   mongodb:
     image: mongo:7.0

@@ -1,117 +1,27 @@
-"""POST /analysis/run — accepts analysis request, runs the LangGraph pipeline
-in a FastAPI background task, and returns job_id.
+"""POST /analysis/run — accepts analysis request, enqueues Celery task, returns job_id.
 
-Each analysis agent queries MongoDB directly via aggregation pipelines —
-raw_logs are never loaded into Python memory.
+파이프라인은 Celery Worker 프로세스에서 실행된다. Worker 기동:
+    celery -A app.worker.celery_app worker --loglevel=info
 """
 
-import traceback
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, HTTPException
 
 from app.core.models import AnalysisRequest
 from app.db.mongo import get_collection
-from app.graph.pipeline import analysis_graph
+from app.worker import run_pipeline_task
 
 router = APIRouter()
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Background pipeline task
-# ──────────────────────────────────────────────────────────────────────────────
-
-async def _run_pipeline(job_id: str, request: AnalysisRequest) -> None:
-    job_col = get_collection("job_status")
-
-    try:
-        await job_col.update_one(
-            {"job_id": job_id},
-            {"$set": {"status": "running", "progress": 10}},
-        )
-
-        # ── Run LangGraph pipeline ─────────────────────────────────────────────
-        # Each agent fetches its own data from MongoDB via aggregation.
-        initial_state: dict = {
-            "job_id": job_id,
-            "period": request.period,
-            "domain_description": request.domain_description,
-            "week_start": request.week_start,
-            "week_end": request.week_end,
-        }
-
-        await job_col.update_one(
-            {"job_id": job_id},
-            {"$set": {"progress": 20}},
-        )
-
-        # ── Run LangGraph pipeline (astream for per-node progress updates) ────
-        _NODE_PROGRESS = {
-            "context_agent":       30,
-            "analysis_dispatcher": 70,
-            "insight_agent":       85,
-            "ppt_agent":           95,
-        }
-        result_state: dict = dict(initial_state)
-        async for chunk in analysis_graph.astream(initial_state):
-            for node_name, node_output in chunk.items():
-                result_state.update(node_output)
-                if node_name in _NODE_PROGRESS:
-                    await job_col.update_one(
-                        {"job_id": job_id},
-                        {"$set": {"progress": _NODE_PROGRESS[node_name]}},
-                    )
-
-        # ── Persist result ─────────────────────────────────────────────────────
-        insight_report = result_state.get("insight_report", {})
-        ppt_url = result_state.get("ppt_url")
-        result_col = get_collection("analysis_results")
-        await result_col.replace_one(
-            {"job_id": job_id},
-            {
-                "job_id": job_id,
-                "insight_report": insight_report,
-                "ppt_url": ppt_url,
-                "created_at": datetime.now(tz=timezone.utc),
-            },
-            upsert=True,
-        )
-
-        await job_col.update_one(
-            {"job_id": job_id},
-            {"$set": {
-                "status": "done",
-                "progress": 100,
-                "ppt_url": ppt_url,
-                "result_url": f"/analysis/download/{job_id}",
-            }},
-        )
-
-    except Exception as exc:
-        await job_col.update_one(
-            {"job_id": job_id},
-            {
-                "$set": {
-                    "status": "failed",
-                    "error": str(exc),
-                    "traceback": traceback.format_exc(),
-                }
-            },
-        )
-        raise
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Endpoint
-# ──────────────────────────────────────────────────────────────────────────────
-
 @router.post("/run", status_code=202)
-async def run_analysis(request: AnalysisRequest, background_tasks: BackgroundTasks):
-    """Enqueue a pipeline run and return a job_id for status polling.
+async def run_analysis(request: AnalysisRequest):
+    """Celery 큐에 파이프라인 작업을 등록하고 job_id를 반환한다.
 
-    The pipeline runs asynchronously — poll GET /analysis/status/{job_id}
-    until status == "done", then fetch the result from GET /analysis/result/{job_id}.
+    파이프라인은 비동기 실행 — GET /analysis/status/{job_id} 로 폴링하여
+    status == "done" 확인 후 GET /analysis/result/{job_id} 로 결과를 조회한다.
     """
     if not request.domain_description:
         raise HTTPException(status_code=422, detail="domain_description is required")
@@ -129,5 +39,5 @@ async def run_analysis(request: AnalysisRequest, background_tasks: BackgroundTas
         }
     )
 
-    background_tasks.add_task(_run_pipeline, job_id, request)
+    run_pipeline_task.delay(job_id, request.model_dump())
     return {"job_id": job_id}

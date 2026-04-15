@@ -46,7 +46,8 @@
             <div class="date-range-group">
               <div class="date-field">
                 <label class="date-label">기준일</label>
-                <input type="date" class="date-input" v-model="analysisDate" :disabled="isAnalyzing" />
+                <input type="date" class="date-input" v-model="analysisDate" :disabled="isAnalyzing"
+                  min="2020-12-15" max="2021-01-31" />
               </div>
             </div>
             <p class="date-hint">{{ dateRangeHint }}</p>
@@ -172,7 +173,7 @@ const router = useRouter()
 
 const period = ref('weekly')
 const domainDescription = ref('')
-const analysisDate = ref('')
+const analysisDate = ref('2020-12-22')
 const status = ref('idle')
 const progress = ref(0)
 const jobId = ref(null)
@@ -201,7 +202,7 @@ const computedDateRange = computed(() => {
   if (!analysisDate.value) return null
   const end = new Date(analysisDate.value)
   const start = new Date(analysisDate.value)
-  start.setDate(start.getDate() - periodDays[period.value])
+  start.setDate(start.getDate() - (periodDays[period.value] - 1))
   const fmt = (d) => d.toISOString().slice(0, 10).replace(/-/g, '')
   return { week_start: fmt(start), week_end: fmt(end) }
 })
@@ -210,7 +211,7 @@ const dateRangeHint = computed(() => {
   if (!analysisDate.value) return '기준일을 선택하면 분석 범위가 표시됩니다.'
   const end = new Date(analysisDate.value)
   const start = new Date(analysisDate.value)
-  start.setDate(start.getDate() - periodDays[period.value])
+  start.setDate(start.getDate() - (periodDays[period.value] - 1))
   const fmt = (d) => `${d.getFullYear()}.${String(d.getMonth()+1).padStart(2,'0')}.${String(d.getDate()).padStart(2,'0')}`
   return `${fmt(start)} ~ ${fmt(end)}`
 })

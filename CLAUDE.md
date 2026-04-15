@@ -17,7 +17,7 @@ GA4 ecommerce 행동 데이터를 weekly로 분석하여 자동으로 PPT 보고
 | **jy팀** | `backend_jy` | supervisor, schema_mapping, funnel, cohort, journey, performance, anomaly, prediction, _ga4_utils |
 | **front팀** | `front` | Vue 3 프론트엔드 |
 
-> **주의**: `ppt_agent.py`는 구현 완료 (2026-04-14). `pipeline.py`가 미완료.
+> **주의**: `supervisor.py`는 파이프라인에서 제거됨 — `analysis_dispatcher`가 해당 역할 대체.
 
 ---
 
@@ -26,22 +26,21 @@ GA4 ecommerce 행동 데이터를 weekly로 분석하여 자동으로 PPT 보고
 ```
 [START]
    │
-context_agent        ← epk4429 구현. 도메인 분석 컨텍스트 생성 (LLM + RAG + 웹검색)
+context_agent           ← epk4429 구현. 도메인 분석 컨텍스트 생성 (LLM + RAG + 웹검색)
    │
-supervisor           ← jy팀 구현. domain_context.recommended_sub_agents 기반 라우팅 결정
-   │
-schema_mapping_agent ← jy팀 구현. GA4 필드 → 정규화 필드명 매핑
-   │
+analysis_dispatcher     ← pipeline.py 내 async 노드.
+   │                       domain_context.recommended_sub_agents 기반 asyncio.gather 병렬 실행
+   │                       (supervisor 제거 — dispatcher가 역할 통합)
    ├── funnel_agent
    ├── cohort_agent
-   ├── journey_agent       ← jy팀 구현. 병렬 실행 (LangGraph 설계)
+   ├── journey_agent     ← jy팀 구현. MongoDB 직접 집계
    ├── performance_agent
    ├── anomaly_agent
    └── prediction_agent
           │
-   insight_agent      ← epk4429 구현. 6개 분석 결과 종합 → 슬라이드별 InsightReport 생성 (LLM)
+   insight_agent         ← epk4429 구현. 6개 분석 결과 종합 → 슬라이드별 InsightReport 생성 (LLM)
           │
-   ppt_agent          ← 미구현 (placeholder)
+   ppt_agent             ← jy팀 구현 완료. 8슬라이드 python-pptx
           │
         [END]
 ```
@@ -82,14 +81,24 @@ schema_mapping_agent ← jy팀 구현. GA4 필드 → 정규화 필드명 매핑
 | `app/agents/prediction_agent.py` | ✅ 완료 | linear least-squares + LLM 한국어 코멘트 + 비즈니스 검증 + retry |
 | `app/agents/ppt_agent.py` | ✅ 완료 | 8슬라이드 고정 구조, python-pptx, 도메인 가변 Slide 6 |
 
+### 공통 인프라 (main 브랜치 통합)
+
+| 파일 | 상태 | 비고 |
+|---|---|---|
+| `app/graph/pipeline.py` | ✅ 완료 | LangGraph StateGraph. context_agent → analysis_dispatcher(병렬) → insight_agent → ppt_agent |
+| `app/db/mongo.py` | ✅ 완료 | motor AsyncIOMotorClient. connect/disconnect/get_collection. Collections: events, analysis_results, job_status |
+| `app/tools/web_search_tool.py` | ✅ 완료 | Tavily 웹검색. `web_search(query, max_results)` async 함수 |
+| `app/tools/rag_tool.py` | ✅ 완료 | Qdrant RAG. `rag_search(query, domain, top_k)`. `rag/pipeline/` 하위 embedder/indexer 사용 |
+| `rag/pipeline/embedder.py` | ✅ 완료 | sentence-transformers 기반 임베딩 (로컬, API 키 불필요) |
+| `rag/pipeline/indexer.py` | ✅ 완료 | Qdrant 컬렉션 인덱싱 |
+| `rag/pipeline/loader.py` | ✅ 완료 | 문서 로드 및 청킹 |
+| `rag/ingest_docs.py` | ✅ 완료 | 문서 → Qdrant 적재 스크립트 |
+
 ### 미완료
 
 | 파일 | 상태 | 비고 |
 |---|---|---|
-| `app/graph/pipeline.py` | ❌ placeholder | LangGraph StateGraph 정의 필요 |
-| `app/db/mongo.py` | ❌ placeholder | motor AsyncIOMotorClient 연결 필요 |
-| `app/tools/rag_tool.py` | ❌ placeholder | Qdrant RAG 구현 필요 (현재 빈 리스트 반환) |
-| `app/tools/web_search_tool.py` | ❌ placeholder | Tavily 웹검색 구현 필요 (현재 빈 리스트 반환) |
+| `app/routers/analysis.py` | ⚠️ 미연결 | Celery task로 파이프라인 실행 연결 필요 |
 
 ---
 
@@ -110,9 +119,6 @@ class PipelineState(TypedDict, total=False):
 
     # context_agent 출력
     domain_context: dict         # DomainContext.model_dump()
-
-    # supervisor 출력
-    sub_agents_plan: list[str]
 
     # schema_mapping_agent 출력
     field_mapping: dict
@@ -176,7 +182,7 @@ SlideContent 필드: slide_type, title, headline, bullets,
 ## 데이터 소스
 
 - **Origin:** GA4 BigQuery `ga4_obfuscated_sample_ecommerce` 샘플 데이터셋
-- **Storage:** MongoDB `customer_behavior` DB, `raw_logs` collection
+- **Storage:** MongoDB `ga4_ecommerce` DB, `events` collection (config: `MONGO_DB`, `MONGO_COLLECTION`)
 - **Document 구조:** GA4 BigQuery export nested 원본 그대로
 
 ### GA4 필드 구조 (중요 — flat string이 아닌 nested object)
@@ -213,6 +219,8 @@ SlideContent 필드: slide_type, title, headline, bullets,
 | Vector DB | Qdrant |
 | Task queue | Celery + Redis |
 | PPT 생성 | python-pptx |
+| 웹검색 | Tavily (`tavily-python`) |
+| RAG 임베딩 | sentence-transformers (로컬) |
 | 설정 관리 | pydantic-settings (.env 로드) |
 | 테스트 | pytest + pytest-asyncio |
 
@@ -237,9 +245,27 @@ pip install -r requirements.txt
 
 ```
 OPENAI_API_KEY=sk-...
-MONGODB_URI=mongodb://localhost:27017/customer_behavior
+TAVILY_API_KEY=tvly-...          # 웹검색 (선택 — 없으면 graceful fallback)
+
+# MongoDB (개별 설정 방식)
+MONGO_HOST=localhost
+MONGO_PORT=27017
+MONGO_DB=ga4_ecommerce
+MONGO_COLLECTION=events
+# 또는 URI 방식 (MONGODB_URI 설정 시 개별 설정보다 우선)
+MONGODB_URI=
+
 QDRANT_URL=http://localhost:6333
+QDRANT_HOST=localhost            # rag_tool용
+QDRANT_PORT=6333
 REDIS_URL=redis://localhost:6379/0
+
+# BigQuery → MongoDB 적재 (ingest 시에만 필요)
+BQ_PROJECT_ID=
+BQ_DATASET=bigquery-public-data.ga4_obfuscated_sample_ecommerce
+BQ_DATE_START=20210115
+BQ_DATE_END=20210131
+SA_KEY_PATH=                     # GCP 서비스 계정 키 파일 경로
 ```
 
 ---
@@ -349,7 +375,6 @@ K-PatternHunters/
         │   ├── _agent_utils.py      ← retry loop 공통 유틸 (validate_or_retry, error_patch)
         │   ├── context_agent.py     ← epk4429
         │   ├── insight_agent.py     ← epk4429
-        │   ├── supervisor.py        ← jy팀
         │   ├── schema_mapping_agent.py ← jy팀
         │   ├── funnel_agent.py      ← jy팀
         │   ├── cohort_agent.py      ← jy팀
@@ -359,19 +384,26 @@ K-PatternHunters/
         │   ├── prediction_agent.py  ← jy팀
         │   └── ppt_agent.py         ← jy팀 구현 완료 (8슬라이드)
         ├── core/
-        │   ├── config.py            ← pydantic-settings, lru_cache
-        │   └── models.py            ← 전체 Pydantic 모델 정의
+        │   ├── config.py            ← pydantic-settings, lru_cache, mongodb_uri property
+        │   └── models.py            ← 전체 Pydantic 모델 정의 (564줄)
         ├── db/
-        │   ├── mongo.py             ← 미구현
+        │   ├── mongo.py             ← ✅ motor 구현 완료 (connect/disconnect/get_collection)
         │   └── qdrant.py
         ├── graph/
-        │   └── pipeline.py          ← 미구현 (LangGraph StateGraph)
+        │   └── pipeline.py          ← ✅ LangGraph StateGraph 구현 완료
         ├── routers/
-        │   ├── analysis.py          ← POST /analysis/run
+        │   ├── analysis.py          ← POST /analysis/run (Celery 연결 미완료)
         │   └── status.py            ← GET /analysis/status/{job_id}
         └── tools/
-            ├── rag_tool.py          ← 미구현 (Qdrant RAG)
-            └── web_search_tool.py   ← 미구현 (Tavily)
+            ├── rag_tool.py          ← ✅ Qdrant RAG 구현 완료
+            └── web_search_tool.py   ← ✅ Tavily 웹검색 구현 완료
+    └── rag/
+        ├── ingest_docs.py           ← 문서 → Qdrant 적재 스크립트
+        ├── documents/               ← 적재할 원본 문서
+        └── pipeline/
+            ├── embedder.py          ← sentence-transformers 임베딩
+            ├── indexer.py           ← Qdrant 컬렉션 인덱싱
+            └── loader.py            ← 문서 로드 및 청킹
 ```
 
 ---
@@ -435,9 +467,91 @@ attempt 3 → _run(state) → errors? → ERROR 로그 "exhausted 3 retries"
 
 ---
 
+## 완료된 작업 (2026-04-15)
+
+### 인프라
+- `app/worker.py` 신규 — Celery 앱 + `run_pipeline_task` 정의
+- `app/routers/analysis.py` — `BackgroundTasks` → `run_pipeline_task.delay()` 교체
+- `docker-compose.yml` — `worker` 서비스 추가 (backend 이미지 재사용, celery 명령으로 실행)
+
+### 데이터 적재
+- `data/ingest/transform.py` — `d.pop("items", None)` 제거 → `items` 배열이 `raw_logs`에 embed됨 (**하지만 실제로는 embed 안됨 — 아래 참고**)
+- MongoDB: `customer_behavior` DB, `raw_logs` 컬렉션 (약 200만 건, `20201215~20210131`), `event_items` 컬렉션 (1,574,780건)
+- ⚠️ `items`는 `raw_logs`에 embed되지 않고 별도 `event_items` 컬렉션에 저장됨 (transform.py 수정에도 불구하고)
+
+### 버그 수정 (2026-04-15 세션)
+
+#### 1. MongoDB 잘못된 DB 접근 — session_count=0 근본 원인 해결
+- **증상**: performance/funnel/journey agent가 모두 ~35ms에 0 반환. cohort/anomaly는 정상.
+- **원인**: `get_collection()`이 `MONGO_DB` env var(`ga4_ecommerce` 기본값)을 사용해 잘못된 DB 접근.
+  `MONGODB_URI`에 DB 이름(`customer_behavior`)이 포함돼 있었지만 무시됨.
+- **수정**: `app/db/mongo.py` — `MONGODB_URI` 설정 시 `_client.get_default_database()` 사용:
+  ```python
+  def get_collection(name: str):
+      if settings.MONGODB_URI:
+          try:
+              return _client.get_default_database()[name]
+          except Exception:
+              pass
+      return _client[settings.MONGO_DB][name]
+  ```
+
+#### 2. by_category 빈 배열 — event_items 컬렉션 분리
+- **증상**: `$unwind: "$items"` 결과 빈 배열. Playground에서도 재현됨.
+- **원인**: `items` 필드가 `raw_logs`에 없음. 별도 `event_items` 컬렉션에 1,574,780건 존재.
+- **수정**: `performance_agent.py` — `$facet`에서 `by_category` 서브파이프라인 제거.
+  `_aggregate_by_category()` 함수 신규 추가 — `event_items` 컬렉션 직접 조회:
+  ```python
+  async def _aggregate_by_category(items_col, start: str, end: str) -> list[dict]:
+      pipeline = [
+          {"$match": {"event_date": {"$gte": start, "$lte": end},
+                      "event_name": {"$in": ["view_item", "add_to_cart", "purchase"]}}},
+          {"$group": {"_id": {"$ifNull": ["$item_category", "unknown"]},
+                      "view_count": ..., "add_to_cart_count": ...,
+                      "purchase_count": ..., "revenue": ...}},
+          {"$sort": {"revenue": -1}},
+      ]
+  ```
+  `_run()` 내 `items_col = get_collection("event_items")` 추가.
+
+#### 3. PPT 출력 품질 개선
+- `ppt_agent.py`:
+  - 통화 기호 `₩` → `$`
+  - ARPU → ARPPU (`total_revenue / transaction_count`)
+  - 예측 지표명 한국어 매핑 (`_PREDICTION_TARGET_KO` dict): `next_week_revenue` → `다음 주 매출` 등
+  - LLM 코멘트 글자 수 제한 `[:60]` → `[:120]`
+- `prediction_agent.py` — 데이터 부족 경고 한국어화:
+  `"Only N weeks of data..."` → `"데이터 N주치만 확보됨 (요청: M주) — 예측 신뢰도 낮음"`
+- `insight_agent.py` — `_SYSTEM_PROMPT` 강화:
+  - bullet 포맷 강제: `"[지표명] [수치] — [비교] → [비즈니스 의미]"`
+  - 수치 없는 bullet 금지 명시
+  - recommendation 포맷 강제: `"[구체적 액션] — 근거: [분석명]에서 [수치/패턴] 발견."`
+
+#### 4. 프론트엔드 기준일 기본값 설정
+- `frontend/src/views/Dashboard.vue`:
+  - `analysisDate = ref('')` → `ref('2020-12-22')` (데이터 존재 날짜로 기본값)
+  - `<input type="date">` 에 `min="2020-12-15" max="2021-01-31"` 속성 추가
+
+### 현재 파이프라인 상태 (2026-04-15 기준)
+- **모든 에이전트 정상 동작 확인** — Dec 15-22 / Dec 22-31 두 기간 PPT 생성 완료
+- Apparel 카테고리 최다 구매 등 `event_items` 데이터 정상 반영
+- `docker compose restart worker` 필수 — Python 파일 수정 후 항상 재시작
+
+---
+
+## MongoDB 컬렉션 구조 (실제)
+
+| 컬렉션 | 건수 | 내용 |
+|---|---|---|
+| `raw_logs` | ~200만 | GA4 이벤트 (items 필드 없음) |
+| `event_items` | 1,574,780 | 구매 이벤트의 items 배열 (분리 저장) |
+
+> `event_items` 도큐먼트 구조: `event_date`, `event_name`, `user_pseudo_id`, `item_id`, `item_name`, `item_category`, `price`, `quantity`, `revenue`
+
+---
+
 ## 다음 작업 우선순위
 
-1. **pipeline.py** — LangGraph StateGraph 정의 (schema_mapping 후 6개 병렬 팬아웃)
-2. **db/mongo.py** — motor 연결 구현, raw_logs MongoDB에서 직접 로드
-3. **rag_tool / web_search_tool** — context_agent에서 실제 RAG/웹검색 활성화
-4. **routers/analysis.py** — Celery task로 파이프라인 실행 연결
+1. **RAG 문서 적재** — `rag/ingest_docs.py` 실행해 Qdrant에 문서 적재 (context_agent RAG 기능 활성화)
+2. **funnel/journey agent by_category 여부 확인** — performance_agent만 수정됨, 다른 agent도 items 필요 시 `event_items` 컬렉션 사용해야 함
+3. (선택) `event_items` 컬렉션 drop — 아무도 사용 안 한다면 정리
