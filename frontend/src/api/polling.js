@@ -1,5 +1,11 @@
-// Polls the backend for the current status of an analysis job by job_id.
+import client from './client.js'
 
-// TODO: implement pollJobStatus(jobId) — GET /analysis/status/{job_id}
-// Returns: { status: 'pending' | 'running' | 'done' | 'failed', progress: number, result_url?: string }
-// Use exponential back-off between polls.
+/**
+ * GET /analysis/status/{jobId}
+ * @param {string} jobId
+ * @returns {Promise<{ job_id: string, status: string, progress: number, result_url: string|null, error: string|null }>}
+ */
+export async function getJobStatus(jobId) {
+  const { data } = await client.get(`/analysis/status/${jobId}`)
+  return data
+}

@@ -49,9 +49,27 @@
             </div>
           </section>
 
-          <button 
-            class="ultra-action-btn" 
-            @click="startAnalysis" 
+          <section class="settings-card premium-glass">
+            <h2 class="section-title">
+              <span class="title-decor"></span>
+              Analysis Date Range
+            </h2>
+            <div class="date-range-group">
+              <div class="date-field">
+                <label class="date-label">START</label>
+                <input type="date" class="date-input" v-model="weekStart" :disabled="isAnalyzing" />
+              </div>
+              <span class="date-sep">—</span>
+              <div class="date-field">
+                <label class="date-label">END</label>
+                <input type="date" class="date-input" v-model="weekEnd" :disabled="isAnalyzing" />
+              </div>
+            </div>
+          </section>
+
+          <button
+            class="ultra-action-btn"
+            @click="startAnalysis"
             :disabled="isAnalyzing || !domainDescription.trim()"
           >
             <span v-if="!isAnalyzing" class="btn-content">
@@ -64,7 +82,7 @@
         </aside>
 
         <main class="display-panel">
-          <div v-if="!jobId && !isAnalyzing" class="massive-placeholder">
+          <div v-if="!jobId && !isAnalyzing && status !== 'failed'" class="massive-placeholder">
             <svg class="placeholder-icon-massive" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
               <circle cx="50" cy="50" r="48" stroke="#E2E8F0" stroke-width="2" stroke-dasharray="10 10"/>
               <path d="M36 24H56L68 36V76H36V24Z" stroke="#CBD5E1" stroke-width="3" stroke-linejoin="round"/>
@@ -76,7 +94,7 @@
           </div>
 
           <transition name="super-slide">
-            <div v-if="isAnalyzing || status === 'done'" class="analysis-monitor premium-glass">
+            <div v-if="isAnalyzing || status === 'done' || status === 'failed'" class="analysis-monitor premium-glass">
               <div class="monitor-header">
                 <h3>Live Orchestration Status</h3>
                 <div class="job-badge">
@@ -115,6 +133,11 @@
                   DOWNLOAD AGENTIC REPORT (PPT)
                 </a>
               </div>
+
+              <div v-if="status === 'failed'" class="error-panel">
+                <span class="error-label">PIPELINE_ERROR</span>
+                <span class="error-msg">{{ errorMessage }}</span>
+              </div>
             </div>
           </transition>
         </main>
@@ -139,19 +162,26 @@
 <script setup>
 import { ref, computed } from 'vue'
 import brandImage from '../image.png'
+import { triggerAnalysis } from '../api/analysis.js'
+import { getJobStatus } from '../api/polling.js'
 
 const period = ref('weekly')
 const domainDescription = ref('')
-const status = ref('idle') 
+const weekStart = ref('')
+const weekEnd = ref('')
+const status = ref('idle')
 const progress = ref(0)
 const jobId = ref(null)
 const logs = ref([])
 const downloadUrl = ref('#')
+const errorMessage = ref('')
+let _pollTimer = null
 
 const isAnalyzing = computed(() => status.value === 'running')
 const statusText = computed(() => {
   if (status.value === 'running') return 'AGENT_CONTEXT_AWARENESS_ACTIVE'
   if (status.value === 'done') return 'COMPLETED: CORE_INSIGHTS_EXTRACTED'
+  if (status.value === 'failed') return 'ERROR: PIPELINE_FAILED'
   return 'STANDBY'
 })
 
@@ -161,32 +191,71 @@ const periods = [
   { label: '월간', value: 'monthly' }
 ]
 
-const startAnalysis = () => {
-  status.value = 'running'
-  progress.value = 0
-  jobId.value = 'PH-CMD-' + Math.floor(Math.random() * 90000 + 10000)
-  logs.value = []
-  
-  const interval = setInterval(() => {
-    progress.value += Math.floor(Math.random() * 15)
-    pushLog()
-    if (progress.value >= 100) {
-      progress.value = 100
-      status.value = 'done'
-      clearInterval(interval)
-    }
-  }, 1100)
+const PROGRESS_LOG_MAP = {
+  10:  { agent: 'PIPELINE',  msg: 'INITIALIZING_AGENTS' },
+  20:  { agent: 'PIPELINE',  msg: 'STATE_CONFIGURED' },
+  30:  { agent: 'CONTEXT',   msg: 'DOMAIN_CONTEXT_GENERATED' },
+  70:  { agent: 'ANALYZER',  msg: 'SUB_AGENT_ANALYSIS_COMPLETE' },
+  85:  { agent: 'INSIGHT',   msg: 'INSIGHTS_SYNTHESIZED' },
+  95:  { agent: 'PPT',       msg: 'REPORT_GENERATED' },
+  100: { agent: 'PIPELINE',  msg: 'ANALYSIS_COMPLETE' },
 }
 
-const pushLog = () => {
-  const agents = ["FUNNEL", "COHORT", "PERFORMANCE", "ANOMALY", "JOURNEY"]
-  const steps = ["FETCHING_RAW_LOGS", "DEDUCTIVE_REASONING", "CROSS_AGENT_SYNC", "PATTERN_SYNTHESIS", "INSIGHT_GENERATION"]
-  
-  logs.value.unshift({
-    time: new Date().toLocaleTimeString('en-GB'),
-    agent: agents[Math.floor(Math.random() * agents.length)],
-    msg: steps[Math.floor(Math.random() * steps.length)]
-  })
+const pushProgressLog = (p) => {
+  const entry = PROGRESS_LOG_MAP[p]
+  if (entry) {
+    logs.value.unshift({
+      time: new Date().toLocaleTimeString('en-GB'),
+      agent: entry.agent,
+      msg: entry.msg,
+    })
+  }
+}
+
+const startAnalysis = async () => {
+  status.value = 'running'
+  progress.value = 0
+  logs.value = []
+  errorMessage.value = ''
+  downloadUrl.value = '#'
+
+  const payload = {
+    period: period.value,
+    domain_description: domainDescription.value,
+    week_start: weekStart.value.replace(/-/g, ''),
+    week_end: weekEnd.value.replace(/-/g, ''),
+    log_ids: [],
+  }
+
+  try {
+    const { job_id } = await triggerAnalysis(payload)
+    jobId.value = job_id
+
+    _pollTimer = setInterval(async () => {
+      try {
+        const s = await getJobStatus(job_id)
+        if (s.progress !== progress.value) {
+          progress.value = s.progress
+          pushProgressLog(s.progress)
+        }
+        if (s.status === 'done') {
+          status.value = 'done'
+          const base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+          downloadUrl.value = `${base}/analysis/download/${job_id}`
+          clearInterval(_pollTimer)
+        } else if (s.status === 'failed') {
+          status.value = 'failed'
+          errorMessage.value = s.error || 'Unknown error'
+          clearInterval(_pollTimer)
+        }
+      } catch (e) {
+        console.error('Polling error:', e)
+      }
+    }, 2000)
+  } catch (e) {
+    status.value = 'failed'
+    errorMessage.value = e?.response?.data?.detail || e.message || 'Failed to start analysis'
+  }
 }
 </script>
 
@@ -719,6 +788,85 @@ textarea:focus { outline: none; }
   background-color: rgba(0, 0, 0, 0.2);
   padding: 0.4rem 0.8rem;
   border-radius: 4px;
+}
+
+/* Date Range */
+.date-range-group {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.date-field {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.date-label {
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: var(--text-muted);
+  letter-spacing: 0.1em;
+}
+
+.date-input {
+  width: 100%;
+  padding: 0.85rem 1rem;
+  border: 2px solid var(--border-color);
+  border-radius: 10px;
+  background-color: var(--bg-primary);
+  color: var(--text-main);
+  font-size: 1rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 0.2s;
+  box-sizing: border-box;
+}
+
+.date-input:focus {
+  outline: none;
+  border-color: var(--accent-orange);
+}
+
+.date-input:disabled {
+  background-color: var(--bg-secondary);
+  cursor: not-allowed;
+  color: var(--text-muted);
+}
+
+.date-sep {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  padding-top: 1.5rem;
+}
+
+/* Error Panel */
+.error-panel {
+  margin-top: 2rem;
+  padding: 1.5rem 2rem;
+  background-color: #FEF2F2;
+  border: 1px solid #FECACA;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.error-label {
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: #991B1B;
+  letter-spacing: 0.1em;
+}
+
+.error-msg {
+  font-size: 0.95rem;
+  color: #B91C1C;
+  font-family: 'Roboto Mono', monospace;
+  word-break: break-all;
 }
 
 /* Animations */
