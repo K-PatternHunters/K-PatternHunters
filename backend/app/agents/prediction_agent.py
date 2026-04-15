@@ -239,7 +239,7 @@ async def prediction_agent(state: dict) -> dict:
         )
         if actual_weeks < lookback_weeks:
             data_quality_warning = (
-                f"Only {actual_weeks} weeks of data available (requested {lookback_weeks})"
+                f"데이터 {actual_weeks}주치만 확보됨 (요청: {lookback_weeks}주) — 예측 신뢰도 낮음"
             )
 
         predictions = []

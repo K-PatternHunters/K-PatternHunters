@@ -73,10 +73,15 @@ def _build_cohorts(purchase_docs: list[dict]) -> list[dict]:
             seen_offsets.add(offset)
             retained = [u for u in users if purchases[u].get(w, 0) > 0]
             revenue = sum(purchases[u].get(w, 0.0) for u in users)
+            # W0 is the cohort's own week — by definition all users are retained
+            if offset == 0:
+                retention = 1.0
+            else:
+                retention = round(len(retained) / cohort_size, 4) if cohort_size > 0 else 0.0
             weeks_data.append({
                 "week_offset": offset,
-                "retained_users": len(retained),
-                "retention_rate": round(len(retained) / cohort_size, 4) if cohort_size > 0 else 0.0,
+                "retained_users": cohort_size if offset == 0 else len(retained),
+                "retention_rate": retention,
                 "revenue": round(revenue, 2),
                 "revenue_per_user": round(revenue / cohort_size, 2) if cohort_size > 0 else 0.0,
             })

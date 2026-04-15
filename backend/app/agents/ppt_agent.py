@@ -364,7 +364,7 @@ def _render_chart_for_slide(
         sessions = [float(d.get("session_count", 0) or 0) for d in daily]
         if any(v > 0 for v in revenues):
             _add_native_chart(slide, XL_CHART_TYPE.LINE,
-                              dates, {"매출(₩)": revenues, "세션": sessions},
+                              dates, {"매출($)": revenues, "세션": sessions},
                               left, top, width, height)
 
     elif ct == "funnel_chart":
@@ -390,7 +390,7 @@ def _render_chart_for_slide(
             vals = [float(d.get("revenue", 0) or 0) for d in daily]
             if any(v > 0 for v in vals):
                 _add_native_chart(slide, XL_CHART_TYPE.COLUMN_CLUSTERED,
-                                  dates, {"매출(₩)": vals},
+                                  dates, {"매출($)": vals},
                                   left, top, width, height)
 
     # table / kpi_cards / sankey → no additional native chart
@@ -481,7 +481,7 @@ def _build_slide1_executive_summary(slide, insight_report: dict, performance_met
     wow = (performance_metrics or {}).get("wow_change") or {}
 
     cards = [
-        ("총 매출",  _fmt(kpis.get("total_revenue", 0), prefix="₩"),     _wow(wow.get("total_revenue"))),
+        ("총 매출",  _fmt(kpis.get("total_revenue", 0), prefix="$"),     _wow(wow.get("total_revenue"))),
         ("전환율",   _pct(kpis.get("conversion_rate", 0)),                 _wow(wow.get("conversion_rate"))),
         ("세션 수",  _fmt(kpis.get("session_count", 0)),                   _wow(wow.get("session_count"))),
     ]
@@ -518,12 +518,12 @@ def _build_slide2_performance(slide, performance_metrics: dict, insight_report: 
     wow = (performance_metrics or {}).get("wow_change") or {}
 
     kpi_rows = [
-        ["총 매출",   _fmt(kpis.get("total_revenue", 0), prefix="₩"),    _wow(wow.get("total_revenue"))],
+        ["총 매출",   _fmt(kpis.get("total_revenue", 0), prefix="$"),    _wow(wow.get("total_revenue"))],
         ["거래 건수", _fmt(kpis.get("transaction_count", 0)),             _wow(wow.get("transaction_count"))],
         ["세션 수",   _fmt(kpis.get("session_count", 0)),                 _wow(wow.get("session_count"))],
         ["전환율",    _pct(kpis.get("conversion_rate", 0)),               _wow(wow.get("conversion_rate"))],
         ["이탈률",    _pct(kpis.get("bounce_rate", 0)),                   "—"],
-        ["ARPU",      _fmt(kpis.get("arpu", 0), prefix="₩", decimals=0), "—"],
+        ["ARPPU",     _fmt(kpis.get("arpu", 0), prefix="$", decimals=2), "—"],
     ]
     _section_label(slide, "주요 KPI", Inches(0.4), Inches(1.25))
     _add_table(slide, ["지표", "이번 주", "전주 대비"],
@@ -554,6 +554,7 @@ def _build_slide3_anomaly(slide, anomaly_metrics: dict, insight_report: dict) ->
     total = summary.get("total_anomalies", 0)
     affected = ", ".join(summary.get("affected_metrics", [])) or "없음"
     worst_date = summary.get("most_abnormal_date") or "—"
+    baseline_days = summary.get("baseline_days_available", 0)
 
     _add_kpi_card(slide, "감지된 이상 수", str(total), "",
                   Inches(0.4), Inches(1.3), Inches(2.8), Inches(1.4))
@@ -561,6 +562,18 @@ def _build_slide3_anomaly(slide, anomaly_metrics: dict, insight_report: dict) ->
                   Inches(3.5), Inches(1.3), Inches(5.0), Inches(1.4))
     _add_kpi_card(slide, "가장 이상한 날짜", worst_date, "",
                   Inches(8.8), Inches(1.3), Inches(2.8), Inches(1.4))
+
+    # Baseline 데이터 품질 경고 — 테이블 위에 배치, 테이블 top을 동적으로 조정
+    TABLE_TOP = Inches(2.82)
+    if baseline_days < 14:
+        warning_msg = (
+            f"⚠ 베이스라인 {baseline_days}일 데이터 — 권장(28일+) 미충족. "
+            f"Z-score 기댓값 신뢰도 낮음 (과거 데이터 부족)."
+        )
+        _add_textbox(slide, warning_msg,
+                     Inches(0.4), Inches(2.77), Inches(12.5), Inches(0.35),
+                     font_size=10, color=_C["neutral"], wrap=False)
+        TABLE_TOP = Inches(3.2)
 
     if anomalies:
         rows = [
@@ -574,14 +587,15 @@ def _build_slide3_anomaly(slide, anomaly_metrics: dict, insight_report: dict) ->
             for a in anomalies[:10]
         ]
         highlight = {i for i, a in enumerate(anomalies[:10]) if abs(a.get("z_score", 0)) >= 3}
+        tbl_h = Inches(6.2) - TABLE_TOP
         _add_table(slide, ["지표", "날짜", "관측값", "기댓값", "Z-score", "방향"],
-                   rows, Inches(0.4), Inches(2.9), Inches(12.5), Inches(3.5),
+                   rows, Inches(0.4), TABLE_TOP, Inches(12.5), tbl_h,
                    highlight_rows=highlight)
 
         top = max(anomalies, key=lambda a: abs(a.get("z_score", 0)), default=None)
         if top and top.get("llm_interpretation"):
             _add_textbox(slide, f"해석: {top['llm_interpretation']}",
-                         Inches(0.4), Inches(6.55), Inches(12.5), Inches(0.55),
+                         Inches(0.4), Inches(6.3), Inches(12.5), Inches(0.55),
                          font_size=10, color=_C["text_mid"], wrap=True)
     else:
         _add_textbox(slide, "이번 주 이상 감지된 지표 없음",
@@ -595,6 +609,53 @@ def _build_slide3_anomaly(slide, anomaly_metrics: dict, insight_report: dict) ->
                 _add_textbox(slide, f"• {b}", Inches(1.5), y, Inches(10.0), Inches(0.42),
                              font_size=12, color=_C["text_dark"])
                 y += Inches(0.5)
+
+
+_EVENT_SHORT: dict[str, str] = {
+    "session_start": "SS",
+    "page_view": "PV",
+    "first_visit": "FV",
+    "user_engagement": "UE",
+    "view_item": "VI",
+    "view_item_list": "VL",
+    "select_item": "SI",
+    "add_to_cart": "AC",
+    "remove_from_cart": "RC",
+    "begin_checkout": "BC",
+    "add_payment_info": "AP",
+    "add_shipping_info": "AS",
+    "purchase": "P",
+    "refund": "RF",
+    "search": "SR",
+    "login": "LI",
+    "sign_up": "SU",
+}
+
+_EVENT_KO: dict[str, str] = {
+    "session_start": "세션 시작",
+    "page_view": "페이지 조회",
+    "first_visit": "첫 방문",
+    "user_engagement": "사용자 참여",
+    "view_item": "상품 조회",
+    "view_item_list": "목록 조회",
+    "select_item": "상품 선택",
+    "add_to_cart": "장바구니 추가",
+    "remove_from_cart": "장바구니 제거",
+    "begin_checkout": "결제 시작",
+    "add_payment_info": "결제 정보 입력",
+    "add_shipping_info": "배송 정보 입력",
+    "purchase": "구매 완료",
+    "refund": "환불",
+    "search": "검색",
+    "login": "로그인",
+    "sign_up": "회원가입",
+}
+
+
+def _shorten_path(path: list[str]) -> str:
+    """Convert a list of GA4 event names to abbreviated path string."""
+    labels = [_EVENT_SHORT.get(e, e[:4]) for e in path]
+    return " → ".join(labels)
 
 
 def _build_slide4_funnel_journey(slide, funnel_metrics: dict, journey_metrics: dict, insight_report: dict) -> None:
@@ -612,7 +673,7 @@ def _build_slide4_funnel_journey(slide, funnel_metrics: dict, journey_metrics: d
     if steps:
         _section_label(slide, "퍼널 단계별 전환", Inches(0.3), CONTENT_TOP, width=Inches(4.2))
         funnel_rows = [
-            [s.get("event_name", ""),
+            [_EVENT_KO.get(s.get("event_name", ""), s.get("event_name", "")),
              _fmt(s.get("user_count", 0)),
              _pct(s.get("conversion_rate", 0)),
              f"{s.get('drop_off_rate', 0):.1f}%"]
@@ -626,7 +687,7 @@ def _build_slide4_funnel_journey(slide, funnel_metrics: dict, journey_metrics: d
 
     # ── 중앙: funnel_chart → 가로 바 차트 ────────────────────────────────────
     if steps:
-        step_names = [s.get("event_name", "")[:14] for s in steps]
+        step_names = [_EVENT_KO.get(s.get("event_name", ""), s.get("event_name", "")) for s in steps]
         user_counts = [float(s.get("user_count", 0) or 0) for s in steps]
         if any(v > 0 for v in user_counts):
             _section_label(slide, "단계별 유저 수", Inches(4.75), CONTENT_TOP, width=Inches(3.5))
@@ -642,7 +703,7 @@ def _build_slide4_funnel_journey(slide, funnel_metrics: dict, journey_metrics: d
     if converted:
         _section_label(slide, "주요 전환 경로 Top 5", Inches(8.5), CONTENT_TOP, width=Inches(4.6))
         path_rows = [
-            [" → ".join(p.get("path", [])),
+            [_shorten_path(p.get("path", [])),
              _fmt(p.get("session_count", 0)),
              _pct(p.get("ratio", 0))]
             for p in converted
@@ -655,7 +716,22 @@ def _build_slide4_funnel_journey(slide, funnel_metrics: dict, journey_metrics: d
 
     journey_summary = (journey_metrics or {}).get("summary", {})
     pre_churn = journey_summary.get("pre_churn_pattern", "")
-    if pre_churn:
+    churned = (journey_metrics or {}).get("churned_paths", [])[:3]
+
+    if churned:
+        _section_label(slide, "주요 이탈 경로 Top 3", Inches(8.5), Inches(4.65), width=Inches(4.6))
+        churn_rows = [
+            [_shorten_path(p.get("path", [])),
+             _fmt(p.get("session_count", 0)),
+             _pct(p.get("ratio", 0))]
+            for p in churned
+        ]
+        _add_table(slide, ["이탈 경로", "세션", "비율"],
+                   churn_rows,
+                   Inches(8.5), Inches(5.0),
+                   Inches(4.6), Inches(1.65),
+                   font_size=10)
+    elif pre_churn:
         _add_rect(slide, Inches(8.5), Inches(5.1), Inches(4.6), Inches(0.75), _C["card"])
         _add_rect(slide, Inches(8.5), Inches(5.1), Inches(0.06), Inches(0.75), _C["negative"])
         _add_textbox(slide, f"이탈 패턴:  {pre_churn}",
@@ -666,51 +742,104 @@ def _build_slide4_funnel_journey(slide, funnel_metrics: dict, journey_metrics: d
 def _build_slide5_segment(slide, performance_metrics: dict, cohort_metrics: dict, insight_report: dict) -> None:
     _slide_background(slide)
     cohort_slide = (insight_report or {}).get("cohort_slide") or {}
-    chart_type   = cohort_slide.get("chart_type", "heatmap")
     _add_slide_header(slide, "고객 세그먼트 분석", cohort_slide.get("headline", ""))
 
-    # ── 상단: 디바이스 / 소스 테이블 (각 절반) ────────────────────────────────
-    SEG_TOP = Inches(1.25)
-    SEG_H   = Inches(2.5)
+    # ── 레이아웃 상수 (위→아래 순서로 명시적 계산, 겹침 방지) ──────────────────
+    # 헤더 하단: 1.25"
+    # 구분 레이블 높이: 0.28"
+    # 섹션 간 여백: 0.12"
+    LABEL_H  = Inches(0.28)
+    GAP      = Inches(0.12)
 
-    by_device = (performance_metrics or {}).get("by_device_category", [])[:5]
+    S1_LABEL = Inches(1.25)             # 디바이스/소스 레이블
+    S1_TABLE = S1_LABEL + LABEL_H       # 1.53"
+    S1_H     = Inches(1.6)              # 테이블 높이
+    S1_BOT   = S1_TABLE + S1_H          # 3.13"
+
+    S2_LABEL = S1_BOT + GAP             # 3.25"  신규/국가 레이블
+    S2_TABLE = S2_LABEL + LABEL_H       # 3.53"
+    S2_H     = Inches(1.15)             # 테이블 높이
+    S2_BOT   = S2_TABLE + S2_H          # 4.68"
+
+    S3_LABEL = S2_BOT + GAP             # 4.80"  코호트 레이블
+    S3_TABLE = S3_LABEL + LABEL_H       # 5.08"
+    S3_H     = Inches(7.3) - S3_TABLE   # 슬라이드 하단(7.3")까지 채움 ≈ 2.22"
+
+    # ── 상단: 디바이스 / 소스 테이블 ───────────────────────────────────────────
+    by_device = (performance_metrics or {}).get("by_device_category", [])[:4]
     if by_device:
-        _section_label(slide, "디바이스별", Inches(0.4), SEG_TOP, width=Inches(6.0))
+        _section_label(slide, "디바이스별", Inches(0.4), S1_LABEL, width=Inches(6.0))
         rows = [[d.get("device", ""), _fmt(d.get("session_count", 0)),
-                 _pct(d.get("conversion_rate", 0)), _fmt(d.get("revenue", 0), prefix="₩")]
+                 _pct(d.get("conversion_rate", 0)), _fmt(d.get("revenue", 0), prefix="$")]
                 for d in by_device]
         _add_table(slide, ["디바이스", "세션", "전환율", "매출"],
-                   rows, Inches(0.4), SEG_TOP + Inches(0.3), Inches(6.0), SEG_H)
+                   rows, Inches(0.4), S1_TABLE, Inches(6.0), S1_H)
 
-    by_source = (performance_metrics or {}).get("by_traffic_source", [])[:5]
+    by_source = (performance_metrics or {}).get("by_traffic_source", [])[:4]
     if by_source:
-        _section_label(slide, "트래픽 소스별", Inches(6.8), SEG_TOP, width=Inches(6.2))
+        _section_label(slide, "트래픽 소스별", Inches(6.8), S1_LABEL, width=Inches(6.2))
         rows = [[s.get("source", "")[:18], _fmt(s.get("session_count", 0)),
-                 _pct(s.get("conversion_rate", 0)), _fmt(s.get("revenue", 0), prefix="₩")]
+                 _pct(s.get("conversion_rate", 0)), _fmt(s.get("revenue", 0), prefix="$")]
                 for s in by_source]
         _add_table(slide, ["소스", "세션", "전환율", "매출"],
-                   rows, Inches(6.8), SEG_TOP + Inches(0.3), Inches(6.2), SEG_H)
+                   rows, Inches(6.8), S1_TABLE, Inches(6.2), S1_H)
+
+    # ── 중단: 신규 vs 재방문 사용자 + 국가별 ──────────────────────────────────
+    nvr = (performance_metrics or {}).get("new_vs_returning") or {}
+    total_u = nvr.get("total_users", 0)
+    new_u   = nvr.get("new_users", 0)
+    ret_u   = nvr.get("returning_users", 0)
+
+    if total_u > 0:
+        _section_label(slide, "신규 vs 재방문 사용자", Inches(0.4), S2_LABEL, width=Inches(6.0))
+        nvr_rows = [
+            ["신규 사용자",   _fmt(new_u),   f"{new_u/total_u*100:.1f}%"],
+            ["재방문 사용자", _fmt(ret_u),   f"{ret_u/total_u*100:.1f}%"],
+            ["합계",         _fmt(total_u), "100%"],
+        ]
+        _add_table(slide, ["유형", "사용자 수", "비율"],
+                   nvr_rows, Inches(0.4), S2_TABLE, Inches(4.2), S2_H)
+
+    by_geo = (performance_metrics or {}).get("by_geo", [])[:5]
+    if by_geo:
+        _section_label(slide, "국가별 세션", Inches(6.8), S2_LABEL, width=Inches(6.2))
+        geo_rows = [[g.get("country", "")[:16], _fmt(g.get("session_count", 0)),
+                     _pct(g.get("conversion_rate", 0)), _fmt(g.get("revenue", 0), prefix="$")]
+                    for g in by_geo]
+        _add_table(slide, ["국가", "세션", "전환율", "매출"],
+                   geo_rows, Inches(6.8), S2_TABLE, Inches(6.2), S2_H)
 
     # ── 하단: 코호트 히트맵 ────────────────────────────────────────────────────
-    COHORT_TOP = Inches(4.05)
-    COHORT_H   = Inches(3.0)
-    _section_label(slide, "코호트 리텐션 (첫 구매 주차별)", Inches(0.4), COHORT_TOP - Inches(0.3))
+    COHORT_TOP = S3_TABLE
+    COHORT_H   = S3_H
+    _section_label(slide, "코호트 리텐션 (첫 구매 주차별)", Inches(0.4), S3_LABEL)
 
-    if chart_type == "heatmap":
+    cohorts_data = (cohort_metrics or {}).get("cohorts", [])
+    if cohorts_data:
         _render_cohort_heatmap(slide, cohort_metrics,
                                Inches(0.4), COHORT_TOP, Inches(12.6), COHORT_H)
     else:
         cohort_summary = (cohort_metrics or {}).get("summary", {})
-        if cohort_summary:
-            cohort_text = (
-                f"Week 1 평균 재구매율: {_pct(cohort_summary.get('avg_week1_retention', 0))}  |  "
-                f"최고 리텐션 코호트: {cohort_summary.get('best_retention_cohort') or '—'}  |  "
-                f"신규 구매자 트렌드: {cohort_summary.get('new_buyer_trend', '—')}"
-            )
-            _add_rect(slide, Inches(0.4), COHORT_TOP, Inches(12.6), Inches(1.0), _C["card"])
-            _add_textbox(slide, cohort_text,
-                         Inches(0.6), COHORT_TOP + Inches(0.15), Inches(12.2), Inches(0.7),
-                         font_size=12, color=_C["text_dark"], wrap=True, v_anchor="middle")
+        cohort_text = (
+            f"Week 1 평균 재구매율: {_pct(cohort_summary.get('avg_week1_retention', 0))}  |  "
+            f"최고 리텐션 코호트: {cohort_summary.get('best_retention_cohort') or '—'}  |  "
+            f"신규 구매자 트렌드: {cohort_summary.get('new_buyer_trend', '—')}"
+        ) if cohort_summary else "(코호트 데이터 없음)"
+        _add_rect(slide, Inches(0.4), COHORT_TOP, Inches(12.6), Inches(0.85), _C["card"])
+        _add_textbox(slide, cohort_text,
+                     Inches(0.6), COHORT_TOP + Inches(0.1), Inches(12.2), Inches(0.65),
+                     font_size=12, color=_C["text_dark"], wrap=True, v_anchor="middle")
+
+
+def _purchase_rate_str(c: dict) -> str:
+    """구매율 표시: view_count=0 이면 'N/A' (데이터 없음)."""
+    rate = c.get("purchase_rate")
+    if rate is None:
+        return "N/A"
+    try:
+        return f"{float(rate) * 100:.1f}%"
+    except (TypeError, ValueError):
+        return "N/A"
 
 
 def _build_slide6_domain(slide, domain: str, performance_metrics: dict, insight_report: dict) -> None:
@@ -720,21 +849,37 @@ def _build_slide6_domain(slide, domain: str, performance_metrics: dict, insight_
     if "ecommerce" in domain_lower or "commerce" in domain_lower:
         _add_slide_header(slide, "카테고리별 구매 분석", "e-Commerce 도메인 심화 분석")
         by_category = (performance_metrics or {}).get("by_item_category", [])[:10]
+        by_geo      = (performance_metrics or {}).get("by_geo", [])[:6]
+
+        # ── 카테고리 테이블 (좌) ────────────────────────────────────────────
+        CAT_W = Inches(8.0) if by_geo else Inches(12.5)
         if by_category:
             rows = [
-                [c.get("category", "")[:20],
+                [c.get("category", "")[:18],
                  _fmt(c.get("view_count", 0)),
                  _fmt(c.get("add_to_cart_count", 0)),
                  _fmt(c.get("purchase_count", 0)),
-                 _fmt(c.get("revenue", 0), prefix="₩"),
-                 _pct(c.get("purchase_rate", 0))]
+                 _fmt(c.get("revenue", 0), prefix="$"),
+                 _purchase_rate_str(c)]
                 for c in by_category
             ]
             _add_table(slide, ["카테고리", "조회", "장바구니", "구매", "매출", "구매율"],
-                       rows, Inches(0.4), Inches(1.35), Inches(12.5), Inches(5.2))
+                       rows, Inches(0.4), Inches(1.35), CAT_W, Inches(5.2))
         else:
-            _add_textbox(slide, "(카테고리 데이터 없음)", Inches(0.4), Inches(3.0), Inches(12.5), Inches(1.0),
+            _add_textbox(slide, "(카테고리 데이터 없음)", Inches(0.4), Inches(3.0), CAT_W, Inches(1.0),
                          font_size=16, color=_C["text_mid"], align=PP_ALIGN.CENTER)
+
+        # ── 국가별 테이블 (우) ─────────────────────────────────────────────
+        if by_geo:
+            _section_label(slide, "국가별 매출 Top", Inches(8.7), Inches(1.25), width=Inches(4.3))
+            geo_rows = [
+                [g.get("country", "")[:14],
+                 _fmt(g.get("session_count", 0)),
+                 _fmt(g.get("revenue", 0), prefix="$")]
+                for g in by_geo
+            ]
+            _add_table(slide, ["국가", "세션", "매출"],
+                       geo_rows, Inches(8.7), Inches(1.6), Inches(4.3), Inches(4.9))
 
     elif "fintech" in domain_lower or "finance" in domain_lower:
         _add_slide_header(slide, "금융 상품 분석", "Fintech 도메인 심화 분석")
@@ -755,6 +900,14 @@ def _build_slide6_domain(slide, domain: str, performance_metrics: dict, insight_
                      "도메인 컨텍스트에 맞게 이 슬라이드를 커스터마이징하세요.",
                      Inches(0.4), Inches(2.5), Inches(12.5), Inches(2.0),
                      font_size=15, color=_C["text_mid"], wrap=True)
+
+
+_PREDICTION_TARGET_KO: dict[str, str] = {
+    "next_week_revenue":          "다음 주 매출",
+    "next_week_transaction_count": "다음 주 거래 수",
+    "next_week_session_count":    "다음 주 세션 수",
+    "next_week_conversion_rate":  "다음 주 전환율",
+}
 
 
 def _build_slide7_prediction(slide, prediction_metrics: dict, insight_report: dict) -> None:
@@ -783,39 +936,53 @@ def _build_slide7_prediction(slide, prediction_metrics: dict, insight_report: di
 
     if predictions:
         rows = []
+        comments = []
         for p in predictions:
             ci = p.get("confidence_interval", {})
             skipped = p.get("skipped", False)
+            raw_target = p.get("target", "")
+            target_ko = _PREDICTION_TARGET_KO.get(raw_target, raw_target)
             rows.append([
-                p.get("target", ""),
+                target_ko,
                 _fmt(p.get("predicted_value", 0), decimals=2) if not skipped else "데이터 부족",
                 (f"{_fmt(ci.get('lower', 0), decimals=2)} ~ {_fmt(ci.get('upper', 0), decimals=2)}"
                  if not skipped else "—"),
                 p.get("trend_direction", ""),
-                (p.get("llm_comment") or "—")[:60],
             ])
+            comment = (p.get("llm_comment") or "").strip()
+            if comment:
+                comments.append(f"• [{target_ko}] {comment}")
 
         has_chart_data = any(not p.get("skipped") for p in predictions)
 
         if has_chart_data and chart_type == "line_chart":
             # Left: prediction table (narrower); Right: line chart
-            _add_table(slide, ["예측 지표", "예측값", "신뢰구간", "추세", "코멘트"],
-                       rows, Inches(0.4), Inches(2.0), Inches(7.0), Inches(3.8))
+            _add_table(slide, ["예측 지표", "예측값", "신뢰구간", "추세"],
+                       rows, Inches(0.4), Inches(2.0), Inches(7.0), Inches(2.8))
             _render_chart_for_slide(
                 slide, chart_type, prediction_metrics,
-                Inches(7.7), Inches(2.0), Inches(5.3), Inches(3.8),
+                Inches(7.7), Inches(2.0), Inches(5.3), Inches(2.8),
             )
         else:
-            _add_table(slide, ["예측 지표", "예측값", "신뢰구간", "추세", "코멘트"],
-                       rows, Inches(0.4), Inches(2.0), Inches(12.5), Inches(3.8))
+            _add_table(slide, ["예측 지표", "예측값", "신뢰구간", "추세"],
+                       rows, Inches(0.4), Inches(2.0), Inches(12.5), Inches(2.8))
+
+        # LLM 코멘트를 테이블 아래 bullet list로 렌더링
+        if comments:
+            _section_label(slide, "LLM 시사점", Inches(0.4), Inches(5.0), width=Inches(12.5))
+            y = Inches(5.3)
+            for c in comments[:4]:
+                _add_textbox(slide, c, Inches(0.4), y, Inches(12.5), Inches(0.42),
+                             font_size=11, color=_C["text_mid"])
+                y += Inches(0.44)
 
     bullets = pred_slide.get("bullets", [])
     if bullets:
-        y = Inches(6.0)
+        y_start = Inches(6.4) if predictions else Inches(6.0)
         for b in bullets[:2]:
-            _add_textbox(slide, f"• {b}", Inches(0.4), y, Inches(12.5), Inches(0.38),
+            _add_textbox(slide, f"• {b}", Inches(0.4), y_start, Inches(12.5), Inches(0.38),
                          font_size=10, color=_C["text_mid"])
-            y += Inches(0.4)
+            y_start += Inches(0.4)
 
 
 def _build_slide8_recommendations(slide, insight_report: dict) -> None:

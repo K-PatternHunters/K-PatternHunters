@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -60,7 +60,8 @@ top_findings
 
 recommendations
   Top 3-5 actionable steps. Each must reference the specific analysis that surfaced it.
-  Format: "[Action] because [finding from analysis X]."
+  Format: "[구체적 액션] — 근거: [분석명]에서 [구체적 수치/패턴] 발견."
+  예시: "checkout 페이지 UX 개선 우선 착수 — 근거: funnel 분석에서 begin_checkout 이탈률 51.2%(업계 평균 35% 대비 +16.2%p)"
 
 overall_sentiment
   One of: positive / negative / neutral / mixed — based on the week's metrics vs benchmarks.
@@ -68,14 +69,18 @@ overall_sentiment
 Per-slide content (performance, funnel, cohort, journey, anomaly, prediction)
   For each analysis that HAS data:
   - title: short slide title
-  - headline: the single key message for this slide (one sentence)
-  - bullets: 3-5 specific findings with numbers
+  - headline: the single key message for this slide (one sentence, must include a key number)
+  - bullets: 3-5 findings. EACH bullet MUST follow this format:
+      "[지표명] [구체적 수치] — [전주/업계 기준과의 비교] → [비즈니스 의미 또는 원인 추정]"
+      예시: "전환율 1.87% — 업계 기준(2%) 대비 0.13%p 미달, 장바구니 단계 이탈(72%)이 주요 원인"
+      수치가 없는 bullet은 작성하지 마세요.
   - metrics: the most important 3-5 numbers to display prominently
   - chart_type: choose the best visual — funnel_chart / heatmap / sankey / \
 line_chart / bar_chart / kpi_cards / table
   - chart_data_key: the PipelineState key for this analysis's raw data \
 (e.g. "performance_metrics", "funnel_metrics")
-  - speaker_notes: additional context not shown on the slide
+  - speaker_notes: 해당 슬라이드에서 발표자가 강조해야 할 인과관계나 추가 맥락. \
+단순 수치 반복이 아닌 "왜 이런 결과가 나왔는지"에 집중.
 
   If an analysis has NO data (was not run), set the corresponding slide field to null.
 
@@ -158,13 +163,36 @@ def _build_human_message(state: dict) -> str:
     else:
         period_str = period
 
+    # ── Explicit WoW direction summary to prevent LLM contradicting the actual numbers ──
+    wow_section = ""
+    perf = state.get("performance_metrics") or {}
+    wow = perf.get("wow_change") or {}
+    kpis = perf.get("kpis") or {}
+    if wow:
+        def _dir(v) -> str:
+            if v is None:
+                return "데이터 없음"
+            return f"{'증가(+)' if float(v) >= 0 else '감소(-)'} {abs(float(v))*100:.1f}%p"
+
+        wow_lines = [
+            f"  - 총 매출: ${kpis.get('total_revenue', 0):,.0f} | 전주 대비 {_dir(wow.get('total_revenue'))}",
+            f"  - 거래 건수: {kpis.get('transaction_count', 0)} | 전주 대비 {_dir(wow.get('transaction_count'))}",
+            f"  - 세션 수: {kpis.get('session_count', 0)} | 전주 대비 {_dir(wow.get('session_count'))}",
+            f"  - 전환율: {kpis.get('conversion_rate', 0)*100:.2f}% | 전주 대비 {_dir(wow.get('conversion_rate'))}",
+        ]
+        wow_section = (
+            "\n## ⚠ WoW 방향 요약 (이 수치와 모순되는 서술 절대 금지)\n"
+            + "\n".join(wow_lines)
+            + "\n위 방향(증가/감소)과 반대로 서술하면 안 됩니다. executive_summary와 bullets에서 반드시 이 방향과 일치하게 작성하세요.\n"
+        )
+
     return f"""\
 ## Domain Context
 {ctx_section}
 
 ## Analysis Period
 {period_str}
-
+{wow_section}
 ## Sub-Agent Outputs
 {chr(10).join(analysis_sections)}
 

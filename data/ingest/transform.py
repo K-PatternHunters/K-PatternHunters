@@ -76,7 +76,6 @@ def to_event_doc(row: dict) -> dict:
     d["event_params_flat"]    = ep_flat
     d["user_properties_flat"] = up_flat
 
-    d.pop("items",    None)
     d.pop("app_info", None)
 
     d["user_id"] = clean_str(d.get("user_id"))

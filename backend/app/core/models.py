@@ -201,9 +201,11 @@ class DomainContext(BaseModel):
 
     # ── Interpretation & benchmarks ────────────────────────────────────────────
     key_metrics: dict[str, str] = Field(
+        default_factory=dict,
         description="Domain-specific KPI definitions: metric_name -> plain-language description"
     )
     interpretation_guidelines: dict[str, str] = Field(
+        default_factory=dict,
         description=(
             "How to interpret each recommended analysis type within this domain's "
             "business context (e.g. what conversion rate is 'good', which anomalies matter most)"
@@ -486,6 +488,7 @@ class PerformanceKPIs(BaseModel):
     transaction_count: int
     arpu: float
     session_count: int
+    user_count: int = 0
     conversion_rate: float
     bounce_rate: float
 
@@ -504,6 +507,8 @@ class PerformanceMetrics(BaseModel):
     by_traffic_source: list[dict[str, Any]]
     by_device_category: list[dict[str, Any]]
     by_item_category: list[dict[str, Any]]
+    by_geo: list[dict[str, Any]] = []
+    new_vs_returning: dict[str, Any] | None = None
     wow_change: dict[str, Any] | None = None
 
 

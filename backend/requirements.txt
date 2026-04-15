@@ -28,6 +28,7 @@ sentence-transformers
 python-dotenv==1.0.1
 pydantic-settings
 pdfplumber==0.11.0
+tavily-python
 tqdm==4.66.4
 
 # Code quality (dev)

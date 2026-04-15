@@ -137,7 +137,8 @@ def week_offset(cohort_week: str, event_week: str) -> int | None:
     try:
         def _parse(s: str) -> datetime:
             year, w = s.split("-W")
-            return datetime.strptime(f"{year}-W{int(w):02d}-1", "%Y-W%W-%w")
+            # Use ISO 8601 week parsing (%G=ISO year, %V=ISO week, %u=Mon=1)
+            return datetime.strptime(f"{year}-W{int(w):02d}-1", "%G-W%V-%u")
         return (_parse(event_week) - _parse(cohort_week)).days // 7
     except (ValueError, AttributeError):
         return None

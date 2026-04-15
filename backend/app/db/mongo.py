@@ -28,7 +28,19 @@ async def disconnect() -> None:
 
 
 def get_collection(name: str) -> AsyncIOMotorCollection:
-    """Return a handle to the named collection in the configured database."""
+    """Return a handle to the named collection in the configured database.
+
+    Database resolution order:
+    1. MONGODB_URI includes a database name  → use that (get_default_database)
+    2. MONGO_DB env var is set to non-default → use that
+    3. Fallback to MONGO_DB default value
+    """
     if _client is None:
         raise RuntimeError("MongoDB client is not initialised — call connect() first")
-    return _client[get_settings().MONGO_DB][name]
+    settings = get_settings()
+    if settings.MONGODB_URI:
+        try:
+            return _client.get_default_database()[name]
+        except Exception:
+            pass
+    return _client[settings.MONGO_DB][name]

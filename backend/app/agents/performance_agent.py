@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 async def _aggregate_week(col, start: str, end: str) -> dict:
-    """Run a single $facet aggregation for all KPI breakdowns in [start, end]."""
+    """Run a $facet aggregation for KPI breakdowns in [start, end]."""
     pipeline = [
         {"$match": {"event_date": {"$gte": start, "$lte": end}}},
         PREPROCESS_STAGE,
@@ -138,41 +138,78 @@ async def _aggregate_week(col, start: str, end: str) -> dict:
                 {"$match": {"event_count": 1}},
                 {"$count": "bounce_count"},
             ],
-            # ── Item category breakdown ─────────────────────────────────────
-            "by_category": [
-                {"$match": {"event_name": {"$in": ["view_item", "add_to_cart", "purchase"]}}},
-                {"$unwind": "$items"},
+            # ── By country (geo) ────────────────────────────────────────────
+            "by_geo": [
                 {"$group": {
-                    "_id": {"$ifNull": ["$items.item_category", "unknown"]},
-                    "view_count": {"$sum": {"$cond": [{"$eq": ["$event_name", "view_item"]}, 1, 0]}},
-                    "add_to_cart_count": {"$sum": {"$cond": [{"$eq": ["$event_name", "add_to_cart"]}, 1, 0]}},
-                    "purchase_count": {"$sum": {"$cond": [{"$eq": ["$event_name", "purchase"]}, 1, 0]}},
-                    "revenue": {"$sum": {
-                        "$cond": [
-                            {"$eq": ["$event_name", "purchase"]},
-                            {"$multiply": [
-                                {"$ifNull": ["$items.price", 0]},
-                                {"$ifNull": ["$items.quantity", 1]},
-                            ]},
-                            0,
-                        ]
-                    }},
+                    "_id": {"$ifNull": ["$geo.country", "unknown"]},
+                    "sessions": {"$addToSet": {"u": "$user_pseudo_id", "s": "$ga_session_id"}},
+                    "revenue": {"$sum": "$revenue"},
+                    "transactions": {"$addToSet": "$transaction_id_clean"},
                 }},
                 {"$project": {
-                    "category": "$_id",
+                    "country": {"$ifNull": ["$_id", "unknown"]},
                     "_id": 0,
-                    "view_count": 1,
-                    "add_to_cart_count": 1,
-                    "purchase_count": 1,
+                    "session_count": {"$size": "$sessions"},
                     "revenue": 1,
+                    "transaction_count": {
+                        "$size": {
+                            "$filter": {
+                                "input": "$transactions",
+                                "cond": {"$ne": ["$$this", None]},
+                            }
+                        }
+                    },
                 }},
-                {"$sort": {"revenue": -1}},
+                {"$sort": {"session_count": -1}},
+                {"$limit": 8},
+            ],
+            # ── New users (first_visit event) ────────────────────────────────
+            "new_users": [
+                {"$match": {"event_name": "first_visit"}},
+                {"$group": {"_id": None, "ids": {"$addToSet": "$user_pseudo_id"}}},
+                {"$project": {"_id": 0, "count": {"$size": "$ids"}}},
             ],
         }},
     ]
 
     docs = await col.aggregate(pipeline).to_list(length=None)
     return docs[0] if docs else {}
+
+
+async def _aggregate_by_category(items_col, start: str, end: str) -> list[dict]:
+    """Aggregate item category breakdown from event_items collection."""
+    pipeline = [
+        {"$match": {
+            "event_date": {"$gte": start, "$lte": end},
+            "event_name": {"$in": ["view_item", "add_to_cart", "purchase"]},
+        }},
+        {"$group": {
+            "_id": {"$ifNull": ["$item_category", "unknown"]},
+            "view_count": {"$sum": {"$cond": [{"$eq": ["$event_name", "view_item"]}, 1, 0]}},
+            "add_to_cart_count": {"$sum": {"$cond": [{"$eq": ["$event_name", "add_to_cart"]}, 1, 0]}},
+            "purchase_count": {"$sum": {"$cond": [{"$eq": ["$event_name", "purchase"]}, 1, 0]}},
+            "revenue": {"$sum": {
+                "$cond": [
+                    {"$eq": ["$event_name", "purchase"]},
+                    {"$multiply": [
+                        {"$ifNull": ["$price", 0]},
+                        {"$ifNull": ["$quantity", 1]},
+                    ]},
+                    0,
+                ]
+            }},
+        }},
+        {"$project": {
+            "category": "$_id",
+            "_id": 0,
+            "view_count": 1,
+            "add_to_cart_count": 1,
+            "purchase_count": 1,
+            "revenue": 1,
+        }},
+        {"$sort": {"revenue": -1}},
+    ]
+    return await items_col.aggregate(pipeline).to_list(length=None)
 
 
 def _extract_kpis(facet: dict) -> dict:
@@ -183,7 +220,7 @@ def _extract_kpis(facet: dict) -> dict:
     user_count = overall.get("user_count", 0)
     bounce_count = (facet.get("bounce") or [{}])[0].get("bounce_count", 0)
 
-    arpu = round(total_revenue / user_count, 4) if user_count > 0 else 0.0
+    arpu = round(total_revenue / transaction_count, 2) if transaction_count > 0 else 0.0
     cvr = round(transaction_count / session_count, 4) if session_count > 0 else 0.0
     bounce_rate = round(bounce_count / session_count, 4) if session_count > 0 else 0.0
 
@@ -192,6 +229,7 @@ def _extract_kpis(facet: dict) -> dict:
         "transaction_count": transaction_count,
         "arpu": arpu,
         "session_count": session_count,
+        "user_count": user_count,
         "conversion_rate": cvr,
         "bounce_rate": bounce_rate,
     }
@@ -222,7 +260,9 @@ async def performance_agent(state: dict) -> dict:
     async def _run(s: dict) -> tuple[dict, list[str]]:
         week_start: str = s.get("week_start", "")
         week_end: str = s.get("week_end", "")
+        logger.info("performance_agent: week_start=%r  week_end=%r", week_start, week_end)
         col = get_collection("raw_logs")
+        items_col = get_collection("event_items")
 
         facet = await _aggregate_week(col, week_start, week_end)
         kpis = _extract_kpis(facet)
@@ -263,6 +303,7 @@ async def performance_agent(state: dict) -> dict:
             for d in (facet.get("by_device") or [])
         ]
 
+        raw_by_category = await _aggregate_by_category(items_col, week_start, week_end)
         by_item_category = [
             {
                 "category": d.get("category", "unknown"),
@@ -270,12 +311,34 @@ async def performance_agent(state: dict) -> dict:
                 "add_to_cart_count": d.get("add_to_cart_count", 0),
                 "purchase_count": d.get("purchase_count", 0),
                 "revenue": round(d.get("revenue", 0.0), 2),
+                # None when view_count < 10 (insufficient data) — PPT renders as "N/A"
                 "purchase_rate": round(
                     d.get("purchase_count", 0) / d["view_count"], 4
-                ) if d.get("view_count", 0) > 0 else 0.0,
+                ) if d.get("view_count", 0) >= 10 else None,
             }
-            for d in (facet.get("by_category") or [])
+            for d in raw_by_category
         ]
+
+        by_geo = [
+            {
+                "country": d.get("country", "unknown"),
+                "session_count": d.get("session_count", 0),
+                "transaction_count": d.get("transaction_count", 0),
+                "revenue": round(d.get("revenue", 0.0), 2),
+                "conversion_rate": round(
+                    d.get("transaction_count", 0) / d["session_count"], 4
+                ) if d.get("session_count", 0) > 0 else 0.0,
+            }
+            for d in (facet.get("by_geo") or [])
+        ]
+
+        new_user_count = (facet.get("new_users") or [{}])[0].get("count", 0)
+        total_user_count = kpis.get("user_count", 0)
+        new_vs_returning = {
+            "new_users": new_user_count,
+            "returning_users": max(total_user_count - new_user_count, 0),
+            "total_users": total_user_count,
+        }
 
         # ── WoW ───────────────────────────────────────────────────────────────
         prior_start = shift_days(week_start, -7)
@@ -302,6 +365,8 @@ async def performance_agent(state: dict) -> dict:
             "by_traffic_source": by_traffic_source,
             "by_device_category": by_device_category,
             "by_item_category": by_item_category,
+            "by_geo": by_geo,
+            "new_vs_returning": new_vs_returning,
             "wow_change": wow_change,
         }
         return metrics, _validate(metrics)
