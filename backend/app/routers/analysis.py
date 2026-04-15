@@ -46,7 +46,22 @@ async def _run_pipeline(job_id: str, request: AnalysisRequest) -> None:
             {"$set": {"progress": 20}},
         )
 
-        result_state: dict = await analysis_graph.ainvoke(initial_state)
+        # ── Run LangGraph pipeline (astream for per-node progress updates) ────
+        _NODE_PROGRESS = {
+            "context_agent":       30,
+            "analysis_dispatcher": 70,
+            "insight_agent":       85,
+            "ppt_agent":           95,
+        }
+        result_state: dict = dict(initial_state)
+        async for chunk in analysis_graph.astream(initial_state):
+            for node_name, node_output in chunk.items():
+                result_state.update(node_output)
+                if node_name in _NODE_PROGRESS:
+                    await job_col.update_one(
+                        {"job_id": job_id},
+                        {"$set": {"progress": _NODE_PROGRESS[node_name]}},
+                    )
 
         # ── Persist result ─────────────────────────────────────────────────────
         insight_report = result_state.get("insight_report", {})
@@ -65,7 +80,12 @@ async def _run_pipeline(job_id: str, request: AnalysisRequest) -> None:
 
         await job_col.update_one(
             {"job_id": job_id},
-            {"$set": {"status": "done", "progress": 100, "ppt_url": ppt_url}},
+            {"$set": {
+                "status": "done",
+                "progress": 100,
+                "ppt_url": ppt_url,
+                "result_url": f"/analysis/download/{job_id}",
+            }},
         )
 
     except Exception as exc:

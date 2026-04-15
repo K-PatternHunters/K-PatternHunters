@@ -1,5 +1,11 @@
-// Sends a request to the backend to trigger a new analysis job and returns the job_id.
+import client from './client.js'
 
-// TODO: implement triggerAnalysis(payload) — POST /analysis/run
-// Payload shape: { period: 'weekly' | 'daily' | 'monthly', domain_description: string, log_ids: string[] }
-// Returns: { job_id: string }
+/**
+ * POST /analysis/run
+ * @param {{ period: string, domain_description: string, week_start: string, week_end: string, log_ids: string[] }} payload
+ * @returns {Promise<{ job_id: string }>}
+ */
+export async function triggerAnalysis(payload) {
+  const { data } = await client.post('/analysis/run', payload)
+  return data
+}
