@@ -146,14 +146,24 @@ def _build_human_message(state: dict) -> str:
 
     # Current analysis period
     period = state.get("period", "weekly")
-    now_str = datetime.now(tz=timezone.utc).strftime("%Y-W%V (%b %d, %Y UTC)")
+    week_start = state.get("week_start", "")
+    week_end   = state.get("week_end", "")
+    if week_start and week_end:
+        try:
+            s = datetime.strptime(week_start, "%Y%m%d")
+            e = datetime.strptime(week_end, "%Y%m%d")
+            period_str = f"{period} | {s.strftime('%Y-%m-%d')} ~ {e.strftime('%Y-%m-%d')}"
+        except ValueError:
+            period_str = f"{period} | {week_start} ~ {week_end}"
+    else:
+        period_str = period
 
     return f"""\
 ## Domain Context
 {ctx_section}
 
 ## Analysis Period
-{period} — generated at {now_str}
+{period_str}
 
 ## Sub-Agent Outputs
 {chr(10).join(analysis_sections)}
