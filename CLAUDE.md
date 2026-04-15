@@ -479,7 +479,7 @@ attempt 3 → _run(state) → errors? → ERROR 로그 "exhausted 3 retries"
 - MongoDB: `customer_behavior` DB, `raw_logs` 컬렉션 (약 200만 건, `20201215~20210131`), `event_items` 컬렉션 (1,574,780건)
 - ⚠️ `items`는 `raw_logs`에 embed되지 않고 별도 `event_items` 컬렉션에 저장됨 (transform.py 수정에도 불구하고)
 
-### 버그 수정 (2026-04-15 세션)
+### Trouble Shooting(버그 수정) (2026-04-15 세션)
 
 #### 1. MongoDB 잘못된 DB 접근 — session_count=0 근본 원인 해결
 - **증상**: performance/funnel/journey agent가 모두 ~35ms에 0 반환. cohort/anomaly는 정상.
@@ -532,9 +532,58 @@ attempt 3 → _run(state) → errors? → ERROR 로그 "exhausted 3 retries"
   - `analysisDate = ref('')` → `ref('2020-12-22')` (데이터 존재 날짜로 기본값)
   - `<input type="date">` 에 `min="2020-12-15" max="2021-01-31"` 속성 추가
 
-### 현재 파이프라인 상태 (2026-04-15 기준)
-- **모든 에이전트 정상 동작 확인** — Dec 15-22 / Dec 22-31 두 기간 PPT 생성 완료
+### 버그 수정 (2026-04-15 세션 2차)
+
+#### 5. 프론트엔드 날짜 범위 8일 표시 버그
+- **증상**: 분석 기준일 선택 후 "일주일" 버튼 클릭 시 7일이 아닌 8일 범위로 표시.
+- **원인**: `start.setDate(start.getDate() - periodDays[period.value])` — end date를 포함한 inclusive 범위에서 7을 빼야 하므로 6을 빼야 함.
+- **수정**: `frontend/src/views/Dashboard.vue` — `periodDays - 1` 로 변경. 실제 API 전송 범위(week_start~week_end)도 동일하게 7일 고정 확인.
+
+#### 6. Anomaly baseline 부족 — 초기 주차 Z-score 신뢰도 낮음
+- **증상**: Dec 22일 주차 분석 시 베이스라인 7일치만 사용. Z-score 기댓값 불안정.
+- **원인**: 데이터가 12월 15일부터 시작 → 4주 lookback(28일) 확보 불가.
+- **수정**: `anomaly_agent.py` — `_LOOKBACK_WEEKS_MAX = 26` 추가. baseline < 7일이면 26주로 자동 확장. `summary`에 `baseline_days_available`, `baseline_start` 추가. PPT Slide 3에 14일 미만 시 경고 배너 표시.
+
+#### 7. performance_agent — by_geo / 신규·재방문 사용자 누락
+- **증상**: Slide 5에 국가별 / 신규 vs 재방문 테이블 없음.
+- **원인**: `performance_agent.py`에 해당 집계 파이프라인 미구현.
+- **수정**: `_aggregate_week()` `$facet`에 `by_geo`(top 8 국가), `new_users`(`first_visit` 이벤트) 서브파이프라인 추가. `new_vs_returning` dict 계산 후 반환.
+
+#### 8. 카테고리 구매율 이상값 (Accessories 2400%, New 214%)
+- **증상**: view_count=2~41인 카테고리에서 구매율이 수백~수천%로 표시.
+- **원인**: `view_count > 0`이면 `purchase_count / view_count` 계산 → 소량 조회 시 분모가 너무 작음.
+- **수정**: `performance_agent.py` — `view_count >= 10` 미만이면 `purchase_rate = None` (PPT에서 "N/A" 표시).
+
+#### 9. Cohort W0 retention_rate = 0% 버그
+- **증상**: 코호트 히트맵 W0 컬럼이 100%가 아닌 0~수% 로 표시.
+- **원인 1**: `_ga4_utils.py` `week_offset()`이 `%Y-W%W-%w` (Python 비표준) 사용 → 2020-W53처럼 ISO와 비표준이 다른 연말 주차에서 파싱 오류.
+- **원인 2**: W0는 코호트 기준 주 자체이므로 구매 여부와 무관하게 retention=1.0 이어야 하는데 실제 구매 이벤트로 계산함.
+- **수정**: `_ga4_utils.py` → `%G-W%V-%u` (ISO 8601) 로 변경. `cohort_agent.py` → `week_offset == 0`이면 `retention_rate = 1.0`, `retained_users = cohort_size` 강제.
+
+#### 10. insight_agent WoW 방향 오류 (`_fmt_k` 미정의)
+- **증상**: WoW 방향 요약 블록에서 `NameError: name '_fmt_k' is not defined` 발생.
+- **원인**: WoW 수치 포맷 함수 `_fmt_k`를 호출하는 코드가 추가됐으나 해당 함수가 insight_agent.py에 없음.
+- **수정**: `_fmt_k(...)` → `f"${kpis.get('total_revenue', 0):,.0f}"` 인라인 포맷으로 교체.
+
+#### 11. PPT Slide 4 이탈/전환 경로 텍스트 오버플로
+- **증상**: `session_start → user_engagement → ...` 같은 긴 이벤트명 조합이 셀을 벗어남.
+- **원인**: journey_agent가 GA4 원시 이벤트명(snake_case 풀네임)을 그대로 반환. 테이블 컬럼 폭 대비 너무 긺.
+- **수정**: `ppt_agent.py` — `_EVENT_SHORT` (영문 약어), `_EVENT_KO` (한국어) 딕셔너리 추가. 이탈/전환 경로는 약어, 퍼널 테이블·바 차트 축은 한국어 사용.
+
+#### 12. PPT Slide 5 섹션 레이블·테이블 겹침
+- **증상**: "신규 vs 재방문 사용자" 레이블이 디바이스 테이블에, "코호트 리텐션" 레이블이 NVR 테이블에 가려짐.
+- **원인**: 각 섹션의 top 좌표가 이전 테이블 끝보다 위로 설정됨 (NVR_TOP=3.35" < 디바이스 테이블 끝 3.45", 코호트 레이블=4.67" < NVR 테이블 끝 4.95").
+- **수정**: `ppt_agent.py` `_build_slide5_segment()` — 위→아래 순서로 S1/S2/S3 위치를 명시적으로 계산 (`S2_LABEL = S1_BOT + GAP`, `S3_LABEL = S2_BOT + GAP`). 겹침 구조적으로 불가능하게 재설계.
+
+#### 13. PPT Slide 7 LLM 코멘트 레이아웃 불량
+- **증상**: "코멘트" 컬럼이 좁은 셀에 긴 텍스트를 넣어 줄바꿈 과다, 가독성 낮음.
+- **원인**: 코멘트를 테이블 컬럼 내에 포함시킨 설계.
+- **수정**: `ppt_agent.py` — 테이블에서 "코멘트" 컬럼 제거 (4컬럼으로 축소). 코멘트는 테이블 아래 "LLM 시사점" 섹션에 bullet list로 분리 렌더링.
+
+### 현재 파이프라인 상태 (2026-04-15 최종)
+- **모든 에이전트 정상 동작 확인** — Dec 15-22 / Jan 16-22 두 기간 PPT 생성 완료
 - Apparel 카테고리 최다 구매 등 `event_items` 데이터 정상 반영
+- 코호트 W0 = 100%, 국가별/신규재방문 테이블 정상 표시
 - `docker compose restart worker` 필수 — Python 파일 수정 후 항상 재시작
 
 ---
@@ -555,3 +604,40 @@ attempt 3 → _run(state) → errors? → ERROR 로그 "exhausted 3 retries"
 1. **RAG 문서 적재** — `rag/ingest_docs.py` 실행해 Qdrant에 문서 적재 (context_agent RAG 기능 활성화)
 2. **funnel/journey agent by_category 여부 확인** — performance_agent만 수정됨, 다른 agent도 items 필요 시 `event_items` 컬렉션 사용해야 함
 3. (선택) `event_items` 컬렉션 drop — 아무도 사용 안 한다면 정리
+
+---
+
+## 협업 구조 문제 분석 — 개발명세서 부재로 인한 버그 분류
+
+3인 협업 시 구두/줄글로만 인터페이스를 합의하고 각자 개발 후 main merge하는 방식으로 진행됨.
+아래 버그들은 **개발명세서(인터페이스 명세, 데이터 스키마, 컬렉션 명세)가 있었다면 사전에 방지 가능**했던 것들임.
+
+### 개발명세서 부재가 직접 원인인 버그
+
+| # | 버그 | 근본 원인 |
+|---|---|---|
+| **1** | MongoDB DB명 불일치 (`ga4_ecommerce` vs `customer_behavior`) | DB명/컬렉션명을 명세 없이 구두로 협의. env 기본값과 실제 URI 내 DB명이 따로 놀았음 |
+| **2** | `items` 필드 위치 — `raw_logs` embed vs `event_items` 별도 컬렉션 | 데이터 적재 담당(데이터팀)과 분석 에이전트 담당(백엔드팀)이 컬렉션 구조를 서로 다르게 이해. 명세 없이 진행 |
+| **9** | `week_offset()` ISO 주차 파싱 오류 (`%W` vs `%V`) | `_ga4_utils.py`를 공용 유틸로 작성했으나 ISO 8601 vs Python 기본 주차 포맷 차이를 명세에 정의 안 함 |
+| **7** | `by_geo` / 신규재방문 누락 | performance_agent 출력 스키마를 PPT 담당자와 합의 없이 작성. ppt_agent가 없는 키를 참조 |
+| **8** | 카테고리 구매율 2400% 이상값 | `purchase_rate` 계산 조건(최소 view_count 임계값)을 명세에 정의 안 함. 담당자 간 "구매율" 정의 불일치 |
+| **11** | Slide 4 경로 텍스트 오버플로 | journey_agent 출력 포맷(이벤트명 raw vs 약어)을 ppt_agent 담당자와 사전 합의 안 함 |
+
+### 개발명세서와 무관한 버그 (구현 실수)
+
+| # | 버그 | 성격 |
+|---|---|---|
+| **5** | 프론트 날짜 범위 8일 표시 | 단순 off-by-one 계산 오류 |
+| **6** | Anomaly baseline 부족 | 데이터 기간 제약 (12/15 시작)을 사전에 예측 못한 것 — 설계 이슈지만 명세보다는 도메인 이해 문제 |
+| **10** | `_fmt_k` 미정의 NameError | 단순 코딩 실수 |
+| **12** | Slide 5 레이블 겹침 | PPT 레이아웃 수치 계산 실수 |
+| **13** | Slide 7 코멘트 레이아웃 | UX 설계 판단 문제 |
+
+### 결론
+
+발생한 버그 13개 중 **6개(#1, #2, #7, #8, #9, #11)가 개발명세서 부재로 인한 인터페이스 불일치**에서 비롯됨.
+
+공통 패턴:
+- **데이터 스키마 명세 없음** — DB명, 컬렉션 구조, 필드 위치를 구두로만 협의 (#1, #2)
+- **에이전트 출력 포맷 명세 없음** — 한 에이전트의 출력 dict 구조를 다른 에이전트 담당자가 다르게 가정 (#7, #11)
+- **지표 계산 정의 없음** — "구매율", "retention rate" 등의 계산 조건을 명세 없이 각자 구현 (#8, #9)
